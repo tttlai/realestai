@@ -1,8 +1,10 @@
 """Structured JSON logging.
 
-`bind_context(broker_id=..., lead_id=...)` attaches fields to every log line emitted inside the
-block, so handlers don't have to pass them on each call. Never log tokens, and keep message
-bodies out of anything at INFO or above.
+`bind_context(...)` opens a scope whose fields go on every log line emitted inside it, so
+handlers don't have to pass broker_id / lead_id on each call. `add_log_context(...)` adds fields
+to the current scope as they become known; they stay attached until the scope closes, so an
+exception logged by the code that opened the scope still carries them. Never log tokens, and
+keep message bodies out of anything at INFO or above.
 """
 
 import json
@@ -29,6 +31,14 @@ def bind_context(**fields: Any) -> Iterator[None]:
         yield
     finally:
         _context.reset(token)
+
+
+def add_log_context(**fields: Any) -> None:
+    current = _context.get()
+    if current is None:
+        _context.set(dict(fields))
+    else:
+        current.update(fields)
 
 
 class JsonFormatter(logging.Formatter):

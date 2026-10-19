@@ -1,3 +1,4 @@
+import io
 import json
 import logging
 import time
@@ -8,6 +9,7 @@ import httpx
 import pytest
 import respx
 
+from app.log import JsonFormatter
 from app.main import app
 from app.webhooks.whatsapp import parse_messages
 from app.whatsapp.client import WhatsAppClient
@@ -199,22 +201,38 @@ async def test_stale_message_outside_window_gets_no_reply(
     assert not graph.routes[0].called
 
 
-async def test_send_failure_still_returns_200_and_logs(
+@pytest.fixture
+def json_logs() -> Iterator[io.StringIO]:
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonFormatter())
+    root = logging.getLogger()
+    previous_level = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    yield stream
+    root.removeHandler(handler)
+    root.setLevel(previous_level)
+
+
+async def test_send_failure_still_returns_200_and_logs_with_ids(
     client: httpx.AsyncClient,
     db: FakeDatabase,
     graph: respx.MockRouter,
-    caplog: pytest.LogCaptureFixture,
+    json_logs: io.StringIO,
 ) -> None:
     graph.routes[0].respond(500)
-    with caplog.at_level(logging.INFO):
-        response = await post_signed(client, message_payload())
+    response = await post_signed(client, message_payload())
     assert response.status_code == 200
     assert graph.routes[0].call_count == 2
     assert [m["direction"] for m in db.messages] == ["inbound"]
-    failure = next(
-        r for r in caplog.records if r.getMessage() == "failed to handle inbound message"
-    )
-    assert failure.exc_info is not None
+
+    lines = [json.loads(line) for line in json_logs.getvalue().splitlines()]
+    failure = next(line for line in lines if line["msg"] == "failed to handle inbound message")
+    assert failure["broker_id"] == db.brokers[0].id
+    assert failure["lead_id"] == db.leads[0].id
+    assert failure["wa_message_id"] == "wamid.TEST1"
+    assert "WhatsAppError" in failure["exc"]
 
 
 async def test_token_and_body_never_logged(

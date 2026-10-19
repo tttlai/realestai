@@ -17,9 +17,9 @@ from fastapi.responses import PlainTextResponse
 
 from app.config import Settings, get_settings
 from app.crypto import decrypt_token
-from app.db import Broker, Database, Lead
+from app.db import Database
 from app.intake.normalise import normalise_phone
-from app.log import bind_context
+from app.log import add_log_context, bind_context
 from app.webhooks.signature import verify_signature
 from app.whatsapp.client import WhatsAppClient
 
@@ -125,18 +125,14 @@ async def handle_message(message: InboundMessage, db: Database, whatsapp: WhatsA
             extra={"phone_number_id": message.phone_number_id},
         )
         return
-    with bind_context(broker_id=broker.id):
-        phone = normalise_phone(message.from_phone)
-        lead = await db.get_or_create_lead(
-            broker.id, phone, name=message.profile_name, source="whatsapp"
-        )
-        with bind_context(lead_id=lead.id):
-            await _handle_for_lead(message, broker, lead, db, whatsapp)
+    add_log_context(broker_id=broker.id)
 
+    phone = normalise_phone(message.from_phone)
+    lead = await db.get_or_create_lead(
+        broker.id, phone, name=message.profile_name, source="whatsapp"
+    )
+    add_log_context(lead_id=lead.id)
 
-async def _handle_for_lead(
-    message: InboundMessage, broker: Broker, lead: Lead, db: Database, whatsapp: WhatsAppClient
-) -> None:
     stored = await db.insert_message(
         lead_id=lead.id,
         direction="inbound",
