@@ -31,6 +31,10 @@ extend-exclude = ["*.md"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "S", "RUF"]
 
+[tool.ruff.lint.isort]
+# The supabase/ migrations folder would otherwise make the SDK look first-party.
+known-third-party = ["supabase"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
 
