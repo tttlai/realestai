@@ -49,8 +49,9 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 
 ### 3. Meta (WhatsApp Cloud API)
 
-1. At [developers.facebook.com](https://developers.facebook.com/apps), create a **Business**
-   app and add the **WhatsApp** product.
+1. In the [App Dashboard](https://developers.facebook.com/apps), click **Create App**, select the
+   **Connect with customers through WhatsApp** use case, then pick or create a business
+   portfolio. WhatsApp is added to the app for you.
 2. On WhatsApp → **API Setup**, note the test number's **Phone number ID** and the **WhatsApp
    Business Account ID**. Add your own phone to the allowed recipients and verify it (test
    numbers can only message a handful of verified numbers).
