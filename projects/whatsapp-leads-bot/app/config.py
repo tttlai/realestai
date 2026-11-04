@@ -5,9 +5,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Environment configuration. Secrets are SecretStr so they never appear in reprs or logs."""
+    """Environment configuration.
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    Secrets are SecretStr so they never appear in reprs or logs. hide_input_in_errors does the
+    same for startup errors, which would otherwise print part of the raw environment values.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     supabase_url: str
     supabase_service_role_key: SecretStr
