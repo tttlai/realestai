@@ -133,6 +133,19 @@ async def test_text_is_stored_and_echoed(
     ]
 
 
+@pytest.mark.parametrize(
+    "from_phone",
+    ["919876543210", "6591234567", "6421234567", "971501234567", "14155552671"],
+)
+async def test_sender_number_from_meta_is_kept_unchanged(
+    client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter, from_phone: str
+) -> None:
+    await post_signed(client, message_payload(from_phone=from_phone))
+    [lead] = db.leads
+    assert lead.phone == from_phone
+    assert sent_bodies(graph)[0]["to"] == from_phone
+
+
 async def test_duplicate_delivery_is_stored_and_answered_once(
     client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter
 ) -> None:
