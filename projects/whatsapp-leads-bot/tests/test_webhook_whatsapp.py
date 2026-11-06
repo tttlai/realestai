@@ -247,6 +247,106 @@ async def test_token_and_body_never_logged(
             assert "secret-body-text" not in rendered
 
 
+# --- delivery status updates ------------------------------------------------------------
+
+
+def status_payload(
+    status: dict[str, Any], phone_number_id: str = PHONE_NUMBER_ID
+) -> dict[str, Any]:
+    payload = message_payload(phone_number_id=phone_number_id)
+    value = payload["entry"][0]["changes"][0]["value"]
+    del value["messages"], value["contacts"]
+    value["statuses"] = [status]
+    return payload
+
+
+LOCKED_ACCOUNT_STATUS = {
+    "id": "wamid.OUT1",
+    "status": "failed",
+    "recipient_id": "919876543210",
+    "errors": [
+        {
+            "code": 131031,
+            "title": "Business Account locked",
+            "error_data": {"details": "Business account has been locked."},
+        }
+    ],
+}
+
+
+def failed_delivery_logs(stream: io.StringIO) -> list[dict[str, Any]]:
+    lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+    return [line for line in lines if line["msg"] == "outbound message failed"]
+
+
+async def test_failed_delivery_is_logged_with_error_and_broker(
+    client: httpx.AsyncClient,
+    db: FakeDatabase,
+    graph: respx.MockRouter,
+    json_logs: io.StringIO,
+) -> None:
+    response = await post_signed(client, status_payload(LOCKED_ACCOUNT_STATUS))
+    assert response.status_code == 200
+
+    [failure] = failed_delivery_logs(json_logs)
+    assert failure["level"] == "WARNING"
+    assert failure["broker_id"] == db.brokers[0].id
+    assert failure["wa_message_id"] == "wamid.OUT1"
+    assert failure["error_code"] == 131031
+    assert failure["error_title"] == "Business Account locked"
+    assert failure["error_details"] == "Business account has been locked."
+
+    assert "919876543210" not in json_logs.getvalue()
+    assert db.messages == []
+    assert not graph.routes[0].called
+
+
+async def test_failed_delivery_for_unknown_broker_is_still_logged(
+    client: httpx.AsyncClient, json_logs: io.StringIO
+) -> None:
+    await post_signed(client, status_payload(LOCKED_ACCOUNT_STATUS, phone_number_id="999"))
+    [failure] = failed_delivery_logs(json_logs)
+    assert failure["phone_number_id"] == "999"
+    assert failure["error_code"] == 131031
+    assert "broker_id" not in failure
+
+
+async def test_failed_delivery_without_error_details_is_still_logged(
+    client: httpx.AsyncClient, json_logs: io.StringIO
+) -> None:
+    await post_signed(client, status_payload({"id": "wamid.OUT1", "status": "failed"}))
+    [failure] = failed_delivery_logs(json_logs)
+    assert failure["wa_message_id"] == "wamid.OUT1"
+    assert failure["error_code"] is None
+
+
+async def test_failed_delivery_keeps_error_when_broker_lookup_fails(
+    client: httpx.AsyncClient,
+    db: FakeDatabase,
+    json_logs: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail(_: str) -> None:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(db, "get_broker_by_phone_number_id", fail)
+    response = await post_signed(client, status_payload(LOCKED_ACCOUNT_STATUS))
+    assert response.status_code == 200
+
+    lines = [json.loads(line) for line in json_logs.getvalue().splitlines()]
+    failure = next(line for line in lines if line["msg"] == "failed to process delivery failure")
+    assert failure["error_code"] == 131031
+    assert failure["wa_message_id"] == "wamid.OUT1"
+
+
+@pytest.mark.parametrize("status", ["sent", "delivered", "read"])
+async def test_successful_statuses_are_not_logged_as_failures(
+    client: httpx.AsyncClient, json_logs: io.StringIO, status: str
+) -> None:
+    await post_signed(client, status_payload({"id": "wamid.OUT1", "status": status}))
+    assert failed_delivery_logs(json_logs) == []
+
+
 # --- payload parsing --------------------------------------------------------------------
 
 
