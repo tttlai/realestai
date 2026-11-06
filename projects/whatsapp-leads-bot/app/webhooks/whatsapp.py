@@ -2,7 +2,8 @@
 
 POST checks the signature, returns 200 straight away and handles messages in the background.
 Each message is stored once (Meta retries are dropped on the WhatsApp message ID), then replied
-to. Phase 1 replies by echoing the text back.
+to. Phase 1 replies by echoing the text back. Failed delivery updates are logged, because Meta
+can accept a message and only report later that it could not be delivered.
 """
 
 import hmac
@@ -37,6 +38,15 @@ class InboundMessage:
     timestamp: datetime
     type: str
     text: str | None
+
+
+@dataclass(frozen=True)
+class FailedDelivery:
+    phone_number_id: str
+    wa_message_id: str | None
+    error_code: int | None
+    error_title: str | None
+    error_details: str | None
 
 
 @router.get("")
@@ -79,7 +89,7 @@ async def receive_webhook(
 
 
 def parse_messages(payload: dict[str, Any]) -> list[InboundMessage]:
-    """Pull inbound messages out of a webhook payload. Status updates are ignored."""
+    """Pull inbound messages out of a webhook payload."""
     messages: list[InboundMessage] = []
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
@@ -108,6 +118,31 @@ def parse_messages(payload: dict[str, Any]) -> list[InboundMessage]:
     return messages
 
 
+def parse_failed_deliveries(payload: dict[str, Any]) -> list[FailedDelivery]:
+    """Pull failed delivery updates out of a webhook payload, one per reported error."""
+    failures: list[FailedDelivery] = []
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            if change.get("field") != "messages":
+                continue
+            value = change.get("value", {})
+            phone_number_id = value.get("metadata", {}).get("phone_number_id")
+            for status in value.get("statuses", []):
+                if status.get("status") != "failed":
+                    continue
+                for error in status.get("errors") or [{}]:
+                    failures.append(
+                        FailedDelivery(
+                            phone_number_id=phone_number_id,
+                            wa_message_id=status.get("id"),
+                            error_code=error.get("code"),
+                            error_title=error.get("title"),
+                            error_details=error.get("error_data", {}).get("details"),
+                        )
+                    )
+    return failures
+
+
 async def process_payload(payload: dict[str, Any], db: Database, whatsapp: WhatsAppClient) -> None:
     for message in parse_messages(payload):
         with bind_context(wa_message_id=message.wa_message_id):
@@ -115,6 +150,27 @@ async def process_payload(payload: dict[str, Any], db: Database, whatsapp: Whats
                 await handle_message(message, db, whatsapp)
             except Exception:
                 log.exception("failed to handle inbound message")
+
+    for failure in parse_failed_deliveries(payload):
+        with bind_context(
+            phone_number_id=failure.phone_number_id,
+            wa_message_id=failure.wa_message_id,
+            error_code=failure.error_code,
+            error_title=failure.error_title,
+            error_details=failure.error_details,
+        ):
+            try:
+                await log_failed_delivery(failure, db)
+            except Exception:
+                log.exception("failed to process delivery failure")
+
+
+async def log_failed_delivery(failure: FailedDelivery, db: Database) -> None:
+    """Log the failure. The recipient's number is left out; wa_message_id identifies the message."""
+    broker = await db.get_broker_by_phone_number_id(failure.phone_number_id)
+    if broker is not None:
+        add_log_context(broker_id=broker.id)
+    log.warning("outbound message failed")
 
 
 async def handle_message(message: InboundMessage, db: Database, whatsapp: WhatsAppClient) -> None:
