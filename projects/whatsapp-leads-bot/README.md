@@ -3,8 +3,10 @@
 WhatsApp lead-qualification service for Indian real estate brokers. The full spec is in
 [CLAUDE.md](CLAUDE.md).
 
-**Current state: Phase 1 (echo bot).** Messages sent to a broker's WhatsApp number are stored
-in Supabase and the text is sent straight back. Phase 2 replaces the echo with the Claude agent.
+**Current state: Phase 2 (agent).** Messages sent to a broker's WhatsApp number are stored in
+Supabase and answered by a Claude agent that qualifies the lead (buy or rent, budget, area, BHK,
+timeline, home loan), quotes only the broker's listed properties, and hands hot or tricky leads
+to the broker. Every agent run is logged to `agent_logs`.
 
 ## Local development
 
@@ -26,7 +28,7 @@ supabase start                           # local Supabase via Docker, then apply
 TEST_POSTGREST_URL=http://127.0.0.1:54321/rest/v1 TEST_POSTGREST_KEY=<local service key> uv run pytest
 ```
 
-## Setting up Phase 1
+## Setting up
 
 You need accounts on Supabase, Meta for Developers and Railway. Do the steps in order.
 
@@ -78,6 +80,11 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
    | `META_VERIFY_TOKEN` | any long random string you make up |
    | `META_GRAPH_VERSION` | e.g. `v24.0` |
    | `TOKEN_ENCRYPTION_KEY` | key from step 2 |
+   | `ANTHROPIC_API_KEY` | from [console.anthropic.com](https://console.anthropic.com) → API keys (phase 2) |
+
+   Optional: `DEFAULT_MODEL` (default `claude-haiku-5-5`) and `AGENT_EFFORT` (`low`, `medium`
+   (default) or `high`). Without `ANTHROPIC_API_KEY` the bot still stores messages but doesn't
+   reply, and logs a warning at startup.
 
 4. Networking → **Generate Domain**. Check `https://<your-domain>/health` returns `{"status":"ok"}`.
 
@@ -96,6 +103,9 @@ uv run python -m scripts.seed_broker \
 It prompts for the access token (or reads `BROKER_ACCESS_TOKEN`). Re-running with the same
 phone number ID updates the broker, e.g. to replace an expired token.
 
+To use a different model for one broker (e.g. `claude-sonnet-5-5` if Hinglish replies need it),
+set `brokers.model` for that row in Supabase.
+
 ### 6. Connect the webhook
 
 In the Meta app: WhatsApp → **Configuration** → Webhook:
@@ -104,26 +114,89 @@ In the Meta app: WhatsApp → **Configuration** → Webhook:
 - Verify token: the `META_VERIFY_TOKEN` value
 - Click **Verify and save**, then under webhook fields **subscribe to `messages`**.
 
-### 7. Acceptance check
+### 7. Load the broker's properties
 
-1. From your phone, send a message to the test number. The same text should come back.
-2. In Supabase, `messages` has one inbound and one outbound row, and `leads` has your number.
-3. Duplicate deliveries are dropped on `wa_message_id` (enforced by a unique constraint and
-   covered by tests). This should return no rows:
+The agent only quotes what is listed in `properties`. Load the 10 sample Pune listings, or your
+own file in the same format:
+
+```sh
+uv run python -m scripts.seed_properties --phone-number-id <Phone number ID>
+uv run python -m scripts.seed_properties --phone-number-id <Phone number ID>   --file my_listings.json --replace       # --replace deletes the broker's current listings
+```
+
+To change a listing later, edit the row in Supabase. Only rows with `status = 'available'` are
+shown to the agent; prices are in rupees (monthly rent for rentals).
+
+### 8. Try the agent before going live (optional)
+
+`scripts/eval_agent.py` plays the conversations in `tests/fixtures/conversations.json`
+(Hinglish, Hindi, English, typos, off-topic, a complaint, opt-outs, a property that isn't
+listed, a discount request, an attempt to change the bot's rules) against the real Claude API
+with an in-memory database and the sample listings. Nothing goes to Supabase or WhatsApp. It
+prints each chat and flags any rupee amount that isn't a listed price, plus any missed
+expectation. Each run costs a little.
+
+```sh
+uv run python -m scripts.eval_agent                        # needs ANTHROPIC_API_KEY
+uv run python -m scripts.eval_agent --only hinglish_2bhk_wakad --model claude-sonnet-5-5
+```
+
+### 9. Acceptance check
+
+1. From your phone, send `2bhk wakad mein kitna hai?` to the broker's number and keep chatting:
+   the bot should reply in Hinglish, quote only listed prices, and ask one thing at a time.
+2. In Supabase, `leads` fills in (`intent`, `budget`, `area`, `bhk`, `timeline`, `needs_loan`,
+   `score`), and `agent_logs` has a row per reply with its tool calls.
+3. Ask for a visit: the lead's `status` becomes `handed_off`. Say "stop": `opted_out` becomes
+   true and the bot stops replying.
+4. Duplicate deliveries are still dropped. This should return no rows:
    `select wa_message_id, count(*) from messages group by 1 having count(*) > 1;`
+
+To read a conversation with the agent's decisions:
+
+```sql
+select m.created_at, m.direction, m.body
+from messages m join leads l on l.id = m.lead_id
+where l.phone = '<lead number>' order by m.created_at;
+
+select created_at, model, tool_calls, reply from agent_logs
+where lead_id = '<lead id>' order by created_at;
+```
 
 If no reply arrives, check the Railway logs: each line is JSON with `broker_id`, `lead_id` and
 `wa_message_id`. A `no active broker for phone_number_id` warning means step 5's phone number ID
 doesn't match the number Meta is sending from. An `outbound message failed` warning means Meta
 accepted a reply but couldn't deliver it, and `error_code` and `error_title` say why. The reply
-still has an outbound row in `messages`.
+still has an outbound row in `messages`. An `agent not configured` warning means
+`ANTHROPIC_API_KEY` isn't set. `reply mentions a price that is not listed` means the agent quoted
+an amount that matches no listing and wasn't said by the lead: read that conversation.
 
-## Known Phase 1 limitations
+## How the agent works
+
+- Each reply: the last 20 messages, the broker's available properties and the lead's saved details
+  go to Claude (`app/agent/prompt.py`), with three tools (`app/agent/tools.py`): `update_lead`,
+  `handoff_to_broker` and `mark_opted_out`. Up to five rounds of tool calls, then a reply.
+- If Claude fails, refuses, or doesn't finish, the lead gets "Thanks for your message! <broker>
+  will get back to you shortly." and is handed to the broker. The lead is never left without an
+  answer, and never sent a half-written one.
+- A plain `STOP` (or `unsubscribe`, `opt out`) opts the lead out without asking the model. Opt-outs
+  in other words or languages are left to the model.
+- One lead's messages are answered one at a time; a second quick message waits for the first
+  reply.
+- The 24-hour window is checked before calling Claude, so a stale message costs nothing.
+
+## Known limitations
+
+- **The broker is not alerted yet.** Hand-offs set the lead's `status` to `handed_off` (the reason
+  and summary are in `agent_logs`), but the WhatsApp alert to `alert_number` comes in phase 5,
+  with calendar booking. Until then, check for handed-off leads:
+  `select name, phone, budget, area, timeline from leads where status = 'handed_off';`
+- Site visits are not booked yet: the agent asks for a preferred time and hands over (phase 5).
 
 - Messages are handled in-process after Meta gets its 200. If the service restarts mid-way, that
   message may go unanswered (Meta won't resend it, since it already got a 200). It is still in
   `messages` if storing finished.
 - If sending a reply fails (after one retry on a Meta server error), the error is logged and the
   message is not retried, so a lead is never sent the same reply twice.
-- Only text is echoed. Other message types (images, voice notes) are stored but not answered
+- Only text is answered. Other message types (images, voice notes) are stored but not answered
   until Phase 6.

@@ -22,9 +22,10 @@ class Settings(BaseSettings):
 
     token_encryption_key: SecretStr
 
-    # Used from phase 2 onwards.
+    # The agent. Without an API key the bot stores messages but does not reply.
     anthropic_api_key: SecretStr | None = None
-    default_model: str = "claude-haiku-5-5"
+    default_model: str = "claude-haiku-5-5"  # a broker's own `model` overrides this
+    agent_effort: str = "medium"  # low / medium / high: how much the model thinks per reply
 
     log_level: str = "INFO"
 

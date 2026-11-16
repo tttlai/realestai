@@ -1,21 +1,25 @@
 """WhatsApp webhook: Meta verification (GET) and inbound messages (POST).
 
 POST checks the signature, returns 200 straight away and handles messages in the background.
-Each message is stored once (Meta retries are dropped on the WhatsApp message ID), then replied
-to. Phase 1 replies by echoing the text back. Failed delivery updates are logged, because Meta
-can accept a message and only report later that it could not be delivered.
+Each message is stored once (Meta retries are dropped on the WhatsApp message ID), then the agent
+writes the reply. One lead's messages are answered one at a time, so a quick second message
+waits for the first reply and is answered with it in the history. Failed delivery updates are
+logged, because Meta can accept a message and only report later that it could not be delivered.
 """
 
+import asyncio
 import hmac
 import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Any
+from weakref import WeakValueDictionary
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
+from app.agent.run import Agent
 from app.config import Settings, get_settings
 from app.crypto import decrypt_token
 from app.db import Database
@@ -23,6 +27,7 @@ from app.intake.normalise import normalise_wa_id
 from app.log import add_log_context, bind_context
 from app.webhooks.signature import verify_signature
 from app.whatsapp.client import WhatsAppClient
+from app.whatsapp.window import is_window_open
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +88,11 @@ async def receive_webhook(
     except ValueError:
         raise HTTPException(status_code=400) from None
     background_tasks.add_task(
-        process_payload, payload, request.app.state.db, request.app.state.whatsapp
+        process_payload,
+        payload,
+        request.app.state.db,
+        request.app.state.whatsapp,
+        getattr(request.app.state, "agent", None),
     )
     return {"status": "ok"}
 
@@ -143,11 +152,13 @@ def parse_failed_deliveries(payload: dict[str, Any]) -> list[FailedDelivery]:
     return failures
 
 
-async def process_payload(payload: dict[str, Any], db: Database, whatsapp: WhatsAppClient) -> None:
+async def process_payload(
+    payload: dict[str, Any], db: Database, whatsapp: WhatsAppClient, agent: Agent | None
+) -> None:
     for message in parse_messages(payload):
         with bind_context(wa_message_id=message.wa_message_id):
             try:
-                await handle_message(message, db, whatsapp)
+                await handle_message(message, db, whatsapp, agent)
             except Exception:
                 log.exception("failed to handle inbound message")
 
@@ -173,7 +184,9 @@ async def log_failed_delivery(failure: FailedDelivery, db: Database) -> None:
     log.warning("outbound message failed")
 
 
-async def handle_message(message: InboundMessage, db: Database, whatsapp: WhatsAppClient) -> None:
+async def handle_message(
+    message: InboundMessage, db: Database, whatsapp: WhatsAppClient, agent: Agent | None
+) -> None:
     broker = await db.get_broker_by_phone_number_id(message.phone_number_id)
     if broker is None:
         log.warning(
@@ -208,28 +221,48 @@ async def handle_message(message: InboundMessage, db: Database, whatsapp: WhatsA
     if lead.opted_out:
         log.info("lead has opted out; not replying")
         return
-
-    reply = echo_reply(message)
-    if reply is None:
+    if message.type != "text":
+        log.info("non-text message stored; not answered yet")
+        return
+    if agent is None:
+        log.warning("agent not configured (ANTHROPIC_API_KEY is not set); not replying")
+        return
+    if not is_window_open(lead.last_inbound_at):
+        log.info("message is older than the 24-hour window; not replying")
         return
 
-    wa_message_id = await whatsapp.send_text(
-        phone_number_id=broker.phone_number_id,
-        access_token=decrypt_token(broker.access_token_enc),
-        to=lead.phone,
-        body=reply,
-        last_inbound_at=lead.last_inbound_at,
-    )
-    await db.insert_message(
-        lead_id=lead.id,
-        direction="outbound",
-        kind="text",
-        body=reply,
-        wa_message_id=wa_message_id,
-    )
+    async with _lead_lock(lead.id):
+        # Re-read: a reply that finished while this one waited may have changed the lead.
+        lead = await db.get_lead(lead.id) or lead
+        if lead.opted_out:
+            log.info("lead has opted out; not replying")
+            return
+        result = await agent.reply(broker, lead)
+        if result.text is None:
+            return
+        wa_message_id = await whatsapp.send_text(
+            phone_number_id=broker.phone_number_id,
+            access_token=decrypt_token(broker.access_token_enc),
+            to=lead.phone,
+            body=result.text,
+            last_inbound_at=lead.last_inbound_at,
+        )
+        await db.insert_message(
+            lead_id=lead.id,
+            direction="outbound",
+            kind="text",
+            body=result.text,
+            wa_message_id=wa_message_id,
+        )
     log.info("reply sent")
 
 
-def echo_reply(message: InboundMessage) -> str | None:
-    """Phase 1: send text back unchanged. Replaced by the agent in phase 2."""
-    return message.text
+_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+def _lead_lock(lead_id: str) -> asyncio.Lock:
+    lock = _locks.get(lead_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[lead_id] = lock
+    return lock
