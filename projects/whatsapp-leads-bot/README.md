@@ -114,7 +114,9 @@ In the Meta app: WhatsApp → **Configuration** → Webhook:
 
 If no reply arrives, check the Railway logs: each line is JSON with `broker_id`, `lead_id` and
 `wa_message_id`. A `no active broker for phone_number_id` warning means step 5's phone number ID
-doesn't match the number Meta is sending from.
+doesn't match the number Meta is sending from. An `outbound message failed` warning means Meta
+accepted a reply but couldn't deliver it, and `error_code` and `error_title` say why. The reply
+still has an outbound row in `messages`.
 
 ## Known Phase 1 limitations
 
