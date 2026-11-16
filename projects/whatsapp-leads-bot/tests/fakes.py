@@ -1,5 +1,6 @@
-"""In-memory stand-in for app.db.Database with the same dedupe semantics."""
+"""In-memory stand-ins for the database and the Claude API, plus webhook payload helpers."""
 
+import copy
 import hashlib
 import hmac
 import json
@@ -8,8 +9,10 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from anthropic.types import Message
+
 from app.crypto import encrypt_token
-from app.db import Broker, Lead
+from app.db import Broker, Lead, Property, StoredMessage
 
 APP_SECRET = "test-app-secret"
 PHONE_NUMBER_ID = "123456789012345"
@@ -17,10 +20,15 @@ BROKER_TOKEN = "EAAG-test-broker-token"
 
 
 class FakeDatabase:
+    """Same behaviour as app.db.Database, including dedupe on wa_message_id."""
+
     def __init__(self) -> None:
         self.brokers: list[Broker] = []
         self.leads: list[Lead] = []
         self.messages: list[dict[str, Any]] = []
+        self.properties: list[Property] = []
+        self.followups: list[dict[str, Any]] = []
+        self.agent_logs: list[dict[str, Any]] = []
 
     def add_broker(self, **overrides: Any) -> Broker:
         fields: dict[str, Any] = {
@@ -28,12 +36,21 @@ class FakeDatabase:
             "name": "Test Broker",
             "agency_name": "Test Realty",
             "phone_number_id": PHONE_NUMBER_ID,
-            "access_token_enc": encrypt_token(BROKER_TOKEN),
             "alert_number": "919800000000",
         }
+        if "access_token_enc" not in overrides:
+            fields["access_token_enc"] = encrypt_token(BROKER_TOKEN)
         broker = Broker(**(fields | overrides))
         self.brokers.append(broker)
         return broker
+
+    def add_property(self, broker_id: str, **fields: Any) -> Property:
+        prop = Property(id=str(uuid.uuid4()), broker_id=broker_id, **fields)
+        self.properties.append(prop)
+        return prop
+
+    def lead(self, lead_id: str) -> Lead:
+        return next(lead for lead in self.leads if lead.id == lead_id)
 
     async def get_broker_by_phone_number_id(self, phone_number_id: str) -> Broker | None:
         return next(
@@ -52,10 +69,22 @@ class FakeDatabase:
         self.leads.append(lead)
         return lead.model_copy()
 
+    async def get_lead(self, lead_id: str) -> Lead | None:
+        return next((lead.model_copy() for lead in self.leads if lead.id == lead_id), None)
+
     async def set_last_inbound_at(self, lead_id: str, at: datetime) -> None:
-        for lead in self.leads:
+        await self.update_lead(lead_id, {"last_inbound_at": at})
+
+    async def update_lead(self, lead_id: str, fields: dict[str, Any]) -> None:
+        for i, lead in enumerate(self.leads):
             if lead.id == lead_id:
-                lead.last_inbound_at = at
+                self.leads[i] = lead.model_copy(update=fields)
+
+    async def mark_opted_out(self, lead_id: str) -> None:
+        await self.update_lead(lead_id, {"opted_out": True, "status": "closed"})
+        for f in self.followups:
+            if f["lead_id"] == lead_id and not f["sent"]:
+                f["cancelled"] = True
 
     async def insert_message(
         self,
@@ -80,6 +109,90 @@ class FakeDatabase:
             }
         )
         return True
+
+    async def recent_messages(self, lead_id: str, limit: int = 20) -> list[StoredMessage]:
+        rows = [m for m in self.messages if m["lead_id"] == lead_id][-limit:]
+        return [StoredMessage.model_validate(m) for m in rows]
+
+    async def list_available_properties(self, broker_id: str) -> list[Property]:
+        return [p for p in self.properties if p.broker_id == broker_id and p.status == "available"]
+
+    async def count_properties(self, broker_id: str) -> int:
+        return len([p for p in self.properties if p.broker_id == broker_id])
+
+    async def replace_properties(self, broker_id: str, rows: list[dict[str, Any]]) -> int:
+        self.properties = [p for p in self.properties if p.broker_id != broker_id]
+        for row in rows:
+            self.add_property(broker_id, **row)
+        return len(rows)
+
+    async def insert_agent_log(self, **row: Any) -> None:
+        self.agent_logs.append(row)
+
+
+class FakeLLM:
+    """Stands in for anthropic.AsyncAnthropic: `.messages.create(...)` returns queued responses.
+
+    With nothing queued it echoes the lead's latest message, which keeps webhook tests simple.
+    Every call's arguments are kept in `calls`.
+    """
+
+    def __init__(self) -> None:
+        self.messages = self
+        self.calls: list[dict[str, Any]] = []
+        self.queued: list[dict[str, Any] | Exception] = []
+
+    def queue(self, *responses: dict[str, Any] | Exception) -> None:
+        self.queued.extend(responses)
+
+    async def create(self, **kwargs: Any) -> Message:
+        self.calls.append(copy.deepcopy(kwargs))
+        if self.queued:
+            nxt = self.queued.pop(0)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return Message.model_validate(nxt)
+        last_user = next(m for m in reversed(kwargs["messages"]) if m["role"] == "user")
+        content = last_user["content"]
+        text = content if isinstance(content, str) else "ok"
+        return Message.model_validate(text_response(text.split("\n\n")[-1]))
+
+
+def _response(content: list[dict[str, Any]], stop_reason: str) -> dict[str, Any]:
+    return {
+        "id": f"msg_{uuid.uuid4().hex[:12]}",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-haiku-5-5",
+        "content": content,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_input_tokens": 50,
+            "cache_creation_input_tokens": 0,
+        },
+    }
+
+
+def text_response(text: str, stop_reason: str = "end_turn") -> dict[str, Any]:
+    return _response([{"type": "text", "text": text}], stop_reason)
+
+
+def tool_response(*calls: tuple[str, dict[str, Any]]) -> dict[str, Any]:
+    """A turn that thinks, then calls the given tools."""
+    content: list[dict[str, Any]] = [{"type": "thinking", "thinking": "", "signature": "sig"}]
+    for name, tool_input in calls:
+        content.append(
+            {
+                "type": "tool_use",
+                "id": f"toolu_{uuid.uuid4().hex[:12]}",
+                "name": name,
+                "input": tool_input,
+            }
+        )
+    return _response(content, "tool_use")
 
 
 def message_payload(

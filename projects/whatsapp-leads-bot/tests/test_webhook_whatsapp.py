@@ -9,6 +9,7 @@ import httpx
 import pytest
 import respx
 
+from app.agent.run import STOP_CONFIRMATION, Agent
 from app.log import JsonFormatter
 from app.main import app
 from app.webhooks.whatsapp import parse_messages
@@ -17,9 +18,11 @@ from tests.fakes import (
     BROKER_TOKEN,
     PHONE_NUMBER_ID,
     FakeDatabase,
+    FakeLLM,
     encode,
     message_payload,
     sign,
+    text_response,
 )
 
 SEND_URL = f"https://graph.facebook.com/v24.0/{PHONE_NUMBER_ID}/messages"
@@ -40,10 +43,19 @@ def graph() -> Iterator[respx.MockRouter]:
 
 
 @pytest.fixture
-async def client(db: FakeDatabase, graph: respx.MockRouter) -> AsyncIterator[httpx.AsyncClient]:
+def llm() -> FakeLLM:
+    """Echoes the lead's latest message unless a test queues other replies."""
+    return FakeLLM()
+
+
+@pytest.fixture
+async def client(
+    db: FakeDatabase, graph: respx.MockRouter, llm: FakeLLM
+) -> AsyncIterator[httpx.AsyncClient]:
     async with httpx.AsyncClient() as graph_http:
         app.state.db = db
         app.state.whatsapp = WhatsAppClient(graph_http, "v24.0")
+        app.state.agent = Agent(llm, db, default_model="claude-haiku-5-5", effort="medium")  # type: ignore[arg-type]
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
             yield c
@@ -107,9 +119,10 @@ async def test_rejects_bad_signature(
 # --- POST inbound -----------------------------------------------------------------------
 
 
-async def test_text_is_stored_and_echoed(
-    client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter
+async def test_text_is_stored_and_answered_by_the_agent(
+    client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter, llm: FakeLLM
 ) -> None:
+    llm.queue(text_response("Namaste! Kharidna hai ya rent pe chahiye?"))
     response = await post_signed(client, message_payload(text="2bhk wakad mein kitna hai?"))
     assert response.status_code == 200
 
@@ -119,7 +132,7 @@ async def test_text_is_stored_and_echoed(
             "recipient_type": "individual",
             "to": "919876543210",
             "type": "text",
-            "text": {"preview_url": False, "body": "2bhk wakad mein kitna hai?"},
+            "text": {"preview_url": False, "body": "Namaste! Kharidna hai ya rent pe chahiye?"},
         }
     ]
     assert graph.routes[0].calls.last.request.headers["Authorization"] == f"Bearer {BROKER_TOKEN}"
@@ -129,8 +142,13 @@ async def test_text_is_stored_and_echoed(
     assert lead.last_inbound_at is not None
     assert [(m["direction"], m["body"], m["wa_message_id"]) for m in db.messages] == [
         ("inbound", "2bhk wakad mein kitna hai?", "wamid.TEST1"),
-        ("outbound", "2bhk wakad mein kitna hai?", "wamid.OUT1"),
+        ("outbound", "Namaste! Kharidna hai ya rent pe chahiye?", "wamid.OUT1"),
     ]
+    [call] = llm.calls
+    assert call["model"] == "claude-haiku-5-5"
+    assert call["messages"] == [{"role": "user", "content": "2bhk wakad mein kitna hai?"}]
+    [agent_log] = db.agent_logs
+    assert agent_log["reply"] == "Namaste! Kharidna hai ya rent pe chahiye?"
 
 
 @pytest.mark.parametrize(
@@ -185,7 +203,7 @@ async def test_unknown_phone_number_id_is_ignored(
     assert not graph.routes[0].called
 
 
-async def test_non_text_is_stored_but_not_echoed(
+async def test_non_text_is_stored_but_not_answered(
     client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter
 ) -> None:
     await post_signed(client, message_payload(msg_type="image"))
@@ -206,11 +224,46 @@ async def test_opted_out_lead_gets_no_reply(
 
 
 async def test_stale_message_outside_window_gets_no_reply(
-    client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter
+    client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter, llm: FakeLLM
 ) -> None:
     old = int(time.time()) - 25 * 3600
     assert (await post_signed(client, message_payload(timestamp=old))).status_code == 200
     assert len(db.messages) == 1
+    assert not graph.routes[0].called
+    assert llm.calls == []
+
+
+async def test_second_message_is_answered_with_the_conversation_so_far(
+    client: httpx.AsyncClient, llm: FakeLLM
+) -> None:
+    llm.queue(text_response("Buy or rent?"), text_response("Great, what's your budget?"))
+    await post_signed(client, message_payload(wa_message_id="wamid.A", text="2bhk in Wakad"))
+    await post_signed(client, message_payload(wa_message_id="wamid.B", text="buy"))
+    assert llm.calls[1]["messages"] == [
+        {"role": "user", "content": "2bhk in Wakad"},
+        {"role": "assistant", "content": "Buy or rent?"},
+        {"role": "user", "content": "buy"},
+    ]
+
+
+async def test_stop_opts_out_without_calling_the_model(
+    client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter, llm: FakeLLM
+) -> None:
+    await post_signed(client, message_payload(wa_message_id="wamid.A", text="STOP"))
+    assert llm.calls == []
+    assert db.leads[0].opted_out
+    assert [b["text"]["body"] for b in sent_bodies(graph)] == [STOP_CONFIRMATION]
+
+    await post_signed(client, message_payload(wa_message_id="wamid.B", text="hello again"))
+    assert len(sent_bodies(graph)) == 1
+
+
+async def test_without_an_api_key_messages_are_stored_but_not_answered(
+    client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter
+) -> None:
+    app.state.agent = None
+    await post_signed(client, message_payload())
+    assert [m["direction"] for m in db.messages] == ["inbound"]
     assert not graph.routes[0].called
 
 

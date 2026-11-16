@@ -62,6 +62,6 @@ def configure_logging(level: str = "INFO") -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(level.upper())
-    # httpx logs full request URLs at INFO; keep it quiet.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # httpx (WhatsApp) and httpx2 (the Anthropic SDK) log every request at INFO; keep them quiet.
+    for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
+        logging.getLogger(name).setLevel(logging.WARNING)

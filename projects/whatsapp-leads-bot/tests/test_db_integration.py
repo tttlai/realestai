@@ -86,3 +86,62 @@ async def test_set_last_inbound_at(db: Database, broker: Broker) -> None:
     await db.set_last_inbound_at(lead.id, at)
     lead = await db.get_or_create_lead(broker.id, "919876543210", name=None, source="whatsapp")
     assert lead.last_inbound_at == at
+
+
+async def test_lead_updates_and_opt_out(db: Database, broker: Broker) -> None:
+    lead = await db.get_or_create_lead(broker.id, "919876543210", name=None, source="whatsapp")
+    await db.update_lead(lead.id, {"intent": "buy", "area": "Wakad", "status": "qualifying"})
+    await (
+        db._client.table("followups")
+        .insert({"lead_id": lead.id, "due_at": "2030-01-01T00:00:00Z", "template": "followup_day1"})
+        .execute()
+    )
+
+    await db.mark_opted_out(lead.id)
+
+    saved = await db.get_lead(lead.id)
+    assert saved is not None
+    assert (saved.intent, saved.area, saved.opted_out, saved.status) == (
+        "buy",
+        "Wakad",
+        True,
+        "closed",
+    )
+    rows = await db._client.table("followups").select("cancelled").eq("lead_id", lead.id).execute()
+    assert [r["cancelled"] for r in rows.data] == [True]
+
+
+async def test_recent_messages_are_oldest_first(db: Database, broker: Broker) -> None:
+    lead = await db.get_or_create_lead(broker.id, "919876543210", name=None, source="whatsapp")
+    for i in range(3):
+        await db.insert_message(
+            lead_id=lead.id, direction="inbound", kind="text", body=str(i), wa_message_id=None
+        )
+    assert [m.body for m in await db.recent_messages(lead.id, limit=2)] == ["1", "2"]
+
+
+async def test_properties_and_agent_log(db: Database, broker: Broker) -> None:
+    added = await db.replace_properties(
+        broker.id,
+        [
+            {"title": "A", "area": "Wakad", "price_min": 8500000, "price_max": 9500000},
+            {"title": "B", "area": "Baner", "status": "sold"},
+        ],
+    )
+    assert added == 2
+    assert await db.count_properties(broker.id) == 2
+    assert [p.title for p in await db.list_available_properties(broker.id)] == ["A"]
+    assert await db.replace_properties(broker.id, []) == 0
+    assert await db.count_properties(broker.id) == 0
+
+    lead = await db.get_or_create_lead(broker.id, "919876543210", name=None, source="whatsapp")
+    await db.insert_agent_log(
+        lead_id=lead.id,
+        model="claude-haiku-5-5",
+        input_tokens=10,
+        output_tokens=5,
+        tool_calls=[{"name": "update_lead", "input": {"area": "Wakad"}}],
+        reply="hi",
+    )
+    rows = await db._client.table("agent_logs").select("*").eq("lead_id", lead.id).execute()
+    assert rows.data[0]["tool_calls"] == [{"name": "update_lead", "input": {"area": "Wakad"}}]
