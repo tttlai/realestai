@@ -7,9 +7,19 @@ static legal pages.
 |---|---|
 | `src/` | The React homepage |
 | `public/` | Copied as-is into the build: `CNAME`, `app-icon.png`, `privacy/`, `data-deletion/`, `legal.css` |
-| `../docs/` | The built site. GitHub Pages serves this folder from `main`, so it is committed |
+| `dist/` | Local build output (not committed) |
 
-## Working on it
+## Publishing
+
+Pushing changes under `website/` to `main` runs
+[`.github/workflows/deploy-website.yml`](../.github/workflows/deploy-website.yml), which builds
+the site and publishes it to GitHub Pages. There is nothing to build or commit by hand. You can
+also run it from the repo's **Actions** tab → **Deploy website** → **Run workflow**.
+
+This needs the repo's **Settings → Pages → Build and deployment → Source** set to
+**GitHub Actions**, with `realestai.in` as the custom domain.
+
+## Working on it locally
 
 Requires Node 18 or later.
 
@@ -17,11 +27,5 @@ Requires Node 18 or later.
 cd website
 npm install
 npm run dev        # local preview with hot reload
-npm run build      # rebuilds ../docs (it is emptied first, then rebuilt)
+npm run build      # optional: check the production build in dist/
 ```
-
-After `npm run build`, commit the changes in both `website/` and `docs/`. The site updates once
-they reach `main`.
-
-GitHub Pages can only publish from the repo root or a top-level `docs/` folder, which is why the
-build output lives outside `website/`.
