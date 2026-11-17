@@ -120,19 +120,31 @@ async def test_recent_messages_are_oldest_first(db: Database, broker: Broker) ->
     assert [m.body for m in await db.recent_messages(lead.id, limit=2)] == ["1", "2"]
 
 
-async def test_properties_and_agent_log(db: Database, broker: Broker) -> None:
-    added = await db.replace_properties(
+async def test_listing_upsert_status_and_agent_log(db: Database, broker: Broker) -> None:
+    row = {"title": "A", "area": "Wakad", "price_min": 8500000, "price_max": 9500000}
+    await db.upsert_properties(
         broker.id,
         [
-            {"title": "A", "area": "Wakad", "price_min": 8500000, "price_max": 9500000},
-            {"title": "B", "area": "Baner", "status": "sold"},
+            {"external_id": "P1", **row, "status": "available"},
+            {"external_id": "P2", **row, "title": "B", "status": "sold"},
         ],
     )
-    assert added == 2
-    assert await db.count_properties(broker.id) == 2
-    assert [p.title for p in await db.list_available_properties(broker.id)] == ["A"]
-    assert await db.replace_properties(broker.id, []) == 0
-    assert await db.count_properties(broker.id) == 0
+    [p1] = await db.list_available_properties(broker.id)
+    assert (p1.external_id, p1.title) == ("P1", "A")
+
+    # Same external_id: updated in place, keeping its row id.
+    await db.upsert_properties(broker.id, [{"external_id": "P1", **row, "title": "A2"}])
+    all_props = {p.external_id: p for p in await db.list_properties(broker.id)}
+    assert all_props["P1"].id == p1.id and all_props["P1"].title == "A2"
+    assert len(all_props) == 2
+
+    await db.set_properties_status([p1.id], "removed")
+    assert await db.list_available_properties(broker.id) == []
+
+    sheet = "https://docs.google.com/spreadsheets/d/abc/edit"
+    await db.set_listings_sheet(broker.id, sheet)
+    synced = [b.id for b in await db.list_brokers_with_listings_sheet()]
+    assert broker.id in synced
 
     lead = await db.get_or_create_lead(broker.id, "919876543210", name=None, source="whatsapp")
     await db.insert_agent_log(

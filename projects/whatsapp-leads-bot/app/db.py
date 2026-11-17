@@ -1,6 +1,6 @@
 """Supabase access. All queries the app makes live here."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,6 +22,7 @@ class Broker(BaseModel):
     alert_number: str
     timezone: str = "Asia/Kolkata"
     business_hours: dict[str, list[str]] | None = None  # {"mon": ["10:00", "19:00"], ...}
+    listings_sheet_url: str | None = None
     model: str | None = None
     active: bool = True
 
@@ -52,13 +53,14 @@ class Property(BaseModel):
 
     id: str
     broker_id: str
+    external_id: str | None = None  # the listing's ID in its source (sheet or file)
     title: str
     area: str
     bhk: str | None = None
     price_min: int | None = None  # rupees
     price_max: int | None = None
     type: str | None = None  # sale / rent
-    status: str = "available"
+    status: str = "available"  # available / sold / on_hold / removed
     notes: str | None = None
 
 
@@ -211,23 +213,54 @@ class Database:
         )
         return [Property.model_validate(r) for r in _rows(res.data)]
 
-    async def count_properties(self, broker_id: str) -> int:
+    async def list_properties(self, broker_id: str) -> list[Property]:
+        """All of the broker's listings, whatever their status."""
         res = (
-            await self._client.table("properties").select("id").eq("broker_id", broker_id).execute()
+            await self._client.table("properties").select("*").eq("broker_id", broker_id).execute()
         )
-        return len(_rows(res.data))
+        return [Property.model_validate(r) for r in _rows(res.data)]
 
-    async def replace_properties(self, broker_id: str, rows: list[dict[str, Any]]) -> int:
-        """Delete the broker's properties and insert `rows` instead. Returns the number added."""
-        await self._client.table("properties").delete().eq("broker_id", broker_id).execute()
+    async def upsert_properties(self, broker_id: str, rows: list[dict[str, Any]]) -> None:
+        """Insert or update listings, matched on (broker_id, external_id)."""
         if not rows:
-            return 0
-        res = (
-            await self._client.table("properties")
-            .insert([{**r, "broker_id": broker_id} for r in rows])
+            return
+        now = datetime.now(UTC).isoformat()
+        await (
+            self._client.table("properties")
+            .upsert(
+                [{**r, "broker_id": broker_id, "updated_at": now} for r in rows],
+                on_conflict="broker_id,external_id",
+            )
             .execute()
         )
-        return len(_rows(res.data))
+
+    async def set_properties_status(self, property_ids: list[str], status: str) -> None:
+        if not property_ids:
+            return
+        await (
+            self._client.table("properties")
+            .update({"status": status, "updated_at": datetime.now(UTC).isoformat()})
+            .in_("id", property_ids)
+            .execute()
+        )
+
+    async def set_listings_sheet(self, broker_id: str, url: str) -> None:
+        await (
+            self._client.table("brokers")
+            .update({"listings_sheet_url": url})
+            .eq("id", broker_id)
+            .execute()
+        )
+
+    async def list_brokers_with_listings_sheet(self) -> list[Broker]:
+        res = (
+            await self._client.table("brokers")
+            .select("*")
+            .eq("active", True)
+            .not_.is_("listings_sheet_url", "null")
+            .execute()
+        )
+        return [Broker.model_validate(r) for r in _rows(res.data)]
 
     async def insert_agent_log(
         self,
