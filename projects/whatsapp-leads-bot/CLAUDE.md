@@ -15,12 +15,29 @@ When a lead comes in (Meta Lead Ads, portal email from 99acres / MagicBricks / H
 
 One codebase serves every broker. Each broker is a row in `brokers`.
 
+## Current status
+
+| Phase | State |
+|---|---|
+| 1. Echo bot | ✅ Passed 2026-11-16 on a registered business number (Meta business verified, app Live) |
+| 2. Agent | ✅ Built and tested 2026-11-17. Listings sync from Google Sheets added on top |
+| 3. Lead intake | Next |
+| 4-7 | Not started |
+
+What phase 2 left for later: hand-offs set `leads.status = 'handed_off'` but the broker isn't
+alerted yet, and the calendar tools (`get_visit_slots`, `book_visit`) aren't exposed: both come in
+phase 5. Non-text messages are stored but not answered until phase 6.
+
+**Setup and operating steps live in [README.md](README.md)** (Supabase, Meta, Railway, adding a
+broker, loading listings, the eval script, acceptance checks). Keep them there, not here; this
+file is the spec and the rules.
+
 ## Stack
 
 | Layer | Choice |
 |---|---|
 | Language / framework | Python 3.12, FastAPI, Uvicorn |
-| Hosting | Railway (web service + cron service) |
+| Hosting | Railway: the web service, plus cron services (listings sync now, follow-ups in phase 4). Configured in the Railway dashboard, not config files (see Deployment) |
 | Database | Supabase Postgres (`supabase-py` or `asyncpg`) |
 | LLM | Claude API via the `anthropic` Python SDK, tool use |
 | Messaging | WhatsApp Cloud API (Graph API), official only |
@@ -42,7 +59,8 @@ Models: default `claude-haiku-5-5` for conversation turns; make the model config
 - **Encrypt broker access tokens at rest** (Fernet with a key from env). Never log tokens.
 - **Secrets only in environment variables.** Nothing secret in the repo.
 - **Log every inbound message, outbound message, Claude call and tool call** to Supabase so any bot decision can be explained to a broker.
-- Phone numbers are always stored as E.164 without `+`, e.g. `919876543210`.
+- Phone numbers are always stored as E.164 without `+`, e.g. `919876543210`. Numbers from WhatsApp (`wa_id`) already include the country code and are stored unchanged; only numbers typed by people (forms, emails) are normalised.
+- **Listings come from the broker's source** (Google Sheet or JSON file), matched on `properties.external_id`. A sync never deletes: listings missing from the source get `status = 'removed'`, so rows (and visits pointing at them) survive. Edits belong in the source, not in Supabase.
 
 ## Project structure
 
@@ -65,15 +83,28 @@ app/
     tools.py           # tool schemas
     handlers.py        # tool execution
     run.py             # agent loop
+    prices.py          # ₹ formatting (L / Cr) and the unlisted-price check
+  listings/
+    model.py           # one listing from a source, validated
+    sheet.py           # read a Google Sheet (CSV export) into listings
+    sync.py            # upsert by external_id, mark missing 'removed'
+  sync_listings.py     # cron entrypoint: sync every broker with a sheet
   intake/
     normalise.py       # phone normalisation, dedupe, lead upsert
     email_parser.py    # Claude-based extraction from portal emails
   calendar/
     google.py
   transcription.py
-  followups.py         # cron entrypoint
+  followups.py         # cron entrypoint (phase 4)
+scripts/               # run locally, not deployed (the Docker image holds app/ only)
+  seed_broker.py       # add or update a broker (encrypts the token)
+  seed_properties.py   # load listings from a JSON file
+  eval_agent.py        # play tests/fixtures/conversations.json against the real API
+  sample_properties.json
+  listings_template.csv  # Google Sheet template
 tests/
-supabase/migrations/
+  fixtures/conversations.json
+supabase/migrations/   # applied by hand in the Supabase SQL editor, new files only
 ```
 
 ## Environment variables
@@ -83,6 +114,8 @@ SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
 ANTHROPIC_API_KEY=
 DEFAULT_MODEL=claude-haiku-5-5
+AGENT_EFFORT=medium           # low / medium / high
+LOG_LEVEL=INFO
 META_APP_SECRET=
 META_VERIFY_TOKEN=
 META_GRAPH_VERSION=           # pin a current Graph API version
@@ -95,6 +128,10 @@ INBOUND_EMAIL_SECRET=         # shared secret on the email webhook
 ```
 
 ## Database schema (Supabase migration)
+
+The migrations in `supabase/migrations/` are the source of truth; this is the original design.
+Added since: `properties.external_id` (unique per broker), `properties.status` may be
+`removed`, and `brokers.listings_sheet_url` (`20261117000000_listing_sync.sql`).
 
 ```sql
 create table brokers (
@@ -319,10 +356,19 @@ Work through these in order. Each phase must pass its acceptance check before mo
 7. **Multi-tenancy hardening.** Broker onboarding script (insert broker, encrypt token), per-broker model setting, rate limiting per lead, error alerts.
    ✅ Two brokers on two numbers run side by side with no data crossover.
 
+## Deployment
+
+- **Railway**, deploying `main` of `tttlai/realestai` with root directory `/projects/whatsapp-leads-bot`. Service settings (healthcheck `/health`, restart policy, cron schedule, start command) are set in the dashboard: Railway deprecated config files (`railway.json` is read only until 2026-12-01, and new services can't use one). Railway's replacement is Infrastructure as Code (`.railway/railway.ts` via the Railway CLI), if the project outgrows the dashboard.
+- **Migrations** are applied by hand: paste only the new file into the Supabase SQL editor. Re-running the init migration fails with `relation "brokers" already exists`.
+- **Pull requests target `main`.** GitHub has defaulted new PRs to the stale `whatsapp-lead-bot` branch before; check the base.
+- **The marketing site** is in `website/` at the repo root, published to realestai.in by `.github/workflows/deploy-website.yml`. Its `public/` holds the privacy and data-deletion pages Meta links to and a Meta domain-verification file that must stay.
+- **Local runs on OneDrive** need `UV_LINK_MODE=copy` (uv's default hardlinks fail there).
+- **Secrets** go only in `.env` (gitignored) and Railway variables, never in `.env.example`.
+
 ## Testing
 
-- `pytest` for everything. Mock the WhatsApp Graph API, Claude API and Google Calendar.
-- Fixture conversations in `tests/fixtures/`: English, Hindi, Hinglish, typos, voice note, off-topic, rude, opt-out, asks for a property not in inventory.
+- `pytest` for everything. Mock the WhatsApp Graph API, Claude API and Google Calendar (`tests/fakes.py` has an in-memory database and a scripted Claude client). `tests/test_db_integration.py` runs only against a throwaway database.
+- Fixture conversations in `tests/fixtures/conversations.json`: English, Hindi, Hinglish, typos, off-topic, rude, opt-out, asks for a property not in inventory, discount pressure, prompt injection (voice note to add in phase 6). `python -m scripts.eval_agent` runs them against the real API with an in-memory database and flags unlisted prices.
 - Unit-test the 24h window, phone normalisation, signature verification and dedupe directly.
 - Before each pilot: run 20+ real conversations from the test number and review `agent_logs`.
 
