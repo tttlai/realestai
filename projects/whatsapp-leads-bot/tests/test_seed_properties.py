@@ -10,25 +10,33 @@ from tests.fakes import PHONE_NUMBER_ID, FakeDatabase
 
 
 def test_sample_file_is_valid() -> None:
-    rows = seed_properties.load_rows(seed_properties.SAMPLE_FILE)
-    assert len(rows) == 10
-    assert all(r["status"] == "available" for r in rows)
+    listings = seed_properties.load_listings(seed_properties.SAMPLE_FILE)
+    assert len(listings) == 10
+    assert len({lst.external_id for lst in listings}) == 10
 
 
 @pytest.mark.parametrize(
     "item",
     [
-        {"title": "A", "area": "Wakad", "price_min": 10, "price_max": 5},
-        {"title": "A", "area": "Wakad", "type": "lease"},
-        {"title": "A", "area": "Wakad", "colour": "blue"},
-        {"title": "A"},
+        {"id": "1", "title": "A", "area": "Wakad", "price_min": 10_000_000, "price_max": 5},
+        {"id": "1", "title": "A", "area": "Wakad", "type": "lease"},
+        {"id": "1", "title": "A", "area": "Wakad", "colour": "blue"},
+        {"title": "A", "area": "Wakad"},
     ],
 )
 def test_bad_listings_are_rejected(tmp_path: Path, item: dict[str, object]) -> None:
     path = tmp_path / "listings.json"
     path.write_text(json.dumps([item]))
     with pytest.raises(pydantic.ValidationError):
-        seed_properties.load_rows(path)
+        seed_properties.load_listings(path)
+
+
+def test_duplicate_ids_are_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "listings.json"
+    item = {"id": "P1", "title": "A", "area": "Wakad"}
+    path.write_text(json.dumps([item, item]))
+    with pytest.raises(SystemExit, match="P1"):
+        seed_properties.load_listings(path)
 
 
 @pytest.fixture
@@ -43,21 +51,31 @@ def db(monkeypatch: pytest.MonkeyPatch) -> FakeDatabase:
     return fake
 
 
-async def test_loads_listings_for_the_broker(db: FakeDatabase) -> None:
+async def test_loads_listings_and_rerunning_updates_in_place(
+    db: FakeDatabase, capsys: pytest.CaptureFixture[str]
+) -> None:
     await seed_properties.main(["--phone-number-id", PHONE_NUMBER_ID])
     assert len(db.properties) == 10
-    assert {p.broker_id for p in db.properties} == {db.brokers[0].id}
+    ids = {p.id for p in db.properties}
+
+    await seed_properties.main(["--phone-number-id", PHONE_NUMBER_ID])
+    assert {p.id for p in db.properties} == ids
+    assert "0 added, 10 updated, 0 removed" in capsys.readouterr().out
 
 
-async def test_existing_listings_need_replace(db: FakeDatabase) -> None:
-    db.add_property(db.brokers[0].id, title="Keep me", area="Baner")
-    with pytest.raises(SystemExit, match="--replace"):
-        await seed_properties.main(["--phone-number-id", PHONE_NUMBER_ID])
-    assert [p.title for p in db.properties] == ["Keep me"]
+async def test_listings_not_in_the_file_are_marked_removed(db: FakeDatabase) -> None:
+    db.add_property(db.brokers[0].id, title="Old upload", area="Baner")
+    await seed_properties.main(["--phone-number-id", PHONE_NUMBER_ID])
+    old = next(p for p in db.properties if p.title == "Old upload")
+    assert old.status == "removed"
 
-    await seed_properties.main(["--phone-number-id", PHONE_NUMBER_ID, "--replace"])
-    assert "Keep me" not in {p.title for p in db.properties}
-    assert len(db.properties) == 10
+
+async def test_empty_file_needs_allow_empty(db: FakeDatabase, tmp_path: Path) -> None:
+    await seed_properties.main(["--phone-number-id", PHONE_NUMBER_ID])
+    empty = tmp_path / "empty.json"
+    empty.write_text("[]")
+    with pytest.raises(SystemExit, match="allow-empty"):
+        await seed_properties.main(["--phone-number-id", PHONE_NUMBER_ID, "--file", str(empty)])
 
 
 async def test_unknown_broker_is_an_error(db: FakeDatabase) -> None:

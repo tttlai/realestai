@@ -35,8 +35,9 @@ You need accounts on Supabase, Meta for Developers and Railway. Do the steps in 
 ### 1. Supabase
 
 1. Create a project. Choose the Mumbai region (closest to your leads).
-2. Apply the migration in `supabase/migrations/`: open **SQL Editor**, paste the file's contents
-   and run it. (Or with the Supabase CLI from this folder: `supabase link`, then `supabase db push`.)
+2. Apply the migrations in `supabase/migrations/`, oldest first: open **SQL Editor**, paste each
+   file's contents and run it. (Or with the Supabase CLI from this folder: `supabase link`, then
+   `supabase db push`.) When a new migration is added later, run just that file.
 3. From the project's API settings, copy the **Project URL** and the **service-role / secret
    key**. The secret key bypasses row-level security, so keep it server-side only.
 
@@ -66,10 +67,17 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 ### 4. Railway
 
 1. New project → deploy from GitHub → `tttlai/realestai`, branch `main`.
-2. In the service settings:
-   - **Root Directory**: `/projects/whatsapp-leads-bot`
-   - **Config file path**: `/projects/whatsapp-leads-bot/railway.json` (Railway resolves this from
-     the repo root, not the root directory)
+2. In the service's **Settings** (Railway no longer reads config files for new services, so
+   everything is set here):
+   - **Source → Root Directory**: `/projects/whatsapp-leads-bot`
+   - **Source → Watch Paths**: `/projects/whatsapp-leads-bot/**`
+   - **Build**: the Dockerfile is picked up automatically
+   - **Deploy → Healthcheck Path**: `/health`
+   - **Deploy → Restart Policy**: On Failure, 5 retries
+
+   A service created before 2026-08-28 may still point at `railway.json` under **Config-as-code
+   → Railway Config File**. Railway stops reading that file on 2026-12-01: enter the values
+   above, then clear that field so the dashboard settings apply.
 3. Add variables:
 
    | Variable | Value |
@@ -114,18 +122,68 @@ In the Meta app: WhatsApp → **Configuration** → Webhook:
 - Verify token: the `META_VERIFY_TOKEN` value
 - Click **Verify and save**, then under webhook fields **subscribe to `messages`**.
 
-### 7. Load the broker's properties
+### 7. Load the broker's listings
 
-The agent only quotes what is listed in `properties`. Load the 10 sample Pune listings, or your
-own file in the same format:
+The agent only quotes what is in `properties` with `status = 'available'`. Each listing has an
+`id` from its source that never changes; a sync adds or updates listings by that id and marks
+any listing that is no longer in the source `removed`. Nothing is deleted, and the source is
+always the full list: edit the source, not Supabase, or the next sync will undo the edit.
+
+**From a Google Sheet (recommended for brokers):**
+
+1. In Google Sheets, **File → Import → Upload** `scripts/listings_template.csv` to start from the
+   template, then replace the sample rows with the broker's listings. Columns (any order, extra
+   columns ignored):
+
+   | Column | Required | Example |
+   |---|---|---|
+   | `id` | yes, unique, never reused | `P01` |
+   | `title` | yes | `Skyline Residency` |
+   | `area` | yes | `Wakad` |
+   | `bhk` | | `2 BHK` |
+   | `type` | | `sale` or `rent` |
+   | `price` (or `price_min` + `price_max`) | | `85-95 L`, `1.2 Cr`, `8500000`, `28k` (rent per month) |
+   | `status` | | `available` (default), `sold` or `on hold` |
+   | `notes` | | size, possession, amenities: anything the agent may tell leads |
+
+2. **Share → General access → Anyone with the link → Viewer.** The bot reads it through its
+   export link, so don't put anything private in it (owner numbers, internal notes).
+3. Save the sheet for the broker and sync it once:
+
+   ```sh
+   uv run python -m app.sync_listings --phone-number-id <Phone number ID> --sheet "<sheet link>"
+   ```
+
+   It prints what changed, and any rows it skipped with the reason (e.g. a price typed as `85`
+   instead of `85 L`). A skipped row keeps its previous values.
+
+4. Keep it in sync automatically with a second Railway service that runs on a schedule. In the
+   project: **+ Create → GitHub Repo** → `tttlai/realestai`, then in its **Settings**:
+   - **Source → Branch**: `main`; **Root Directory**: `/projects/whatsapp-leads-bot`; **Watch
+     Paths**: `/projects/whatsapp-leads-bot/**`
+   - **Deploy → Custom Start Command**: `python -m app.sync_listings`
+   - **Deploy → Cron Schedule**: `*/30 * * * *` (every 30 minutes, in UTC)
+   - **Deploy → Restart Policy**: Never
+   - No healthcheck and no public domain: it isn't a web server.
+   - **Variables**: the same six as the bot. To avoid copying secrets, reference them, e.g.
+     `SUPABASE_URL` = `${{<bot service name>.SUPABASE_URL}}`.
+
+   Each run syncs every broker that has a sheet, logs what changed, then exits. Its logs are
+   under the service's **Deployments** (look for `listings synced` or `listings sync failed`).
+
+If a sheet can't be read (unshared, deleted, or suddenly empty), the sync changes nothing and
+reports the problem. To really empty a broker's listings, run once with `--allow-empty`.
+
+**From a JSON file** (one-off loads, or listings from a CRM export):
 
 ```sh
-uv run python -m scripts.seed_properties --phone-number-id <Phone number ID>
-uv run python -m scripts.seed_properties --phone-number-id <Phone number ID>   --file my_listings.json --replace       # --replace deletes the broker's current listings
+uv run python -m scripts.seed_properties --phone-number-id <Phone number ID>    # 10 Pune samples
+uv run python -m scripts.seed_properties --phone-number-id <Phone number ID> --file my_listings.json
 ```
 
-To change a listing later, edit the row in Supabase. Only rows with `status = 'available'` are
-shown to the agent; prices are in rupees (monthly rent for rentals).
+The file uses the same fields as the sheet (see `scripts/sample_properties.json`), with prices
+as whole rupees. Use one source per broker: syncing a sheet after a file marks the file's
+listings removed, and the other way round.
 
 ### 8. Try the agent before going live (optional)
 

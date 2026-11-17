@@ -117,14 +117,36 @@ class FakeDatabase:
     async def list_available_properties(self, broker_id: str) -> list[Property]:
         return [p for p in self.properties if p.broker_id == broker_id and p.status == "available"]
 
-    async def count_properties(self, broker_id: str) -> int:
-        return len([p for p in self.properties if p.broker_id == broker_id])
+    async def list_properties(self, broker_id: str) -> list[Property]:
+        return [p for p in self.properties if p.broker_id == broker_id]
 
-    async def replace_properties(self, broker_id: str, rows: list[dict[str, Any]]) -> int:
-        self.properties = [p for p in self.properties if p.broker_id != broker_id]
+    async def upsert_properties(self, broker_id: str, rows: list[dict[str, Any]]) -> None:
         for row in rows:
-            self.add_property(broker_id, **row)
-        return len(rows)
+            match = next(
+                (
+                    i
+                    for i, p in enumerate(self.properties)
+                    if p.broker_id == broker_id and p.external_id == row["external_id"]
+                ),
+                None,
+            )
+            if match is None:
+                self.add_property(broker_id, **row)
+            else:
+                self.properties[match] = self.properties[match].model_copy(update=row)
+
+    async def set_properties_status(self, property_ids: list[str], status: str) -> None:
+        for i, p in enumerate(self.properties):
+            if p.id in property_ids:
+                self.properties[i] = p.model_copy(update={"status": status})
+
+    async def set_listings_sheet(self, broker_id: str, url: str) -> None:
+        for i, b in enumerate(self.brokers):
+            if b.id == broker_id:
+                self.brokers[i] = b.model_copy(update={"listings_sheet_url": url})
+
+    async def list_brokers_with_listings_sheet(self) -> list[Broker]:
+        return [b for b in self.brokers if b.active and b.listings_sheet_url]
 
     async def insert_agent_log(self, **row: Any) -> None:
         self.agent_logs.append(row)

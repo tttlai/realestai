@@ -31,7 +31,7 @@ from app.agent.prices import unlisted_amounts
 from app.agent.run import Agent
 from app.config import Settings
 from app.db import Lead
-from scripts.seed_properties import SAMPLE_FILE, load_rows
+from scripts.seed_properties import SAMPLE_FILE, load_listings
 from tests.fakes import FakeDatabase
 
 FIXTURES = Path(__file__).parent.parent / "tests" / "fixtures" / "conversations.json"
@@ -69,7 +69,7 @@ async def run_conversation(
         agency_name="Ravi Realty",
         access_token_enc="unused",  # noqa: S106  # nothing is sent to WhatsApp
     )
-    await db.replace_properties(broker.id, load_rows(SAMPLE_FILE))
+    await db.upsert_properties(broker.id, [lst.to_row() for lst in load_listings(SAMPLE_FILE)])
     properties = await db.list_available_properties(broker.id)
     lead = await db.get_or_create_lead(broker.id, "919876543210", name=None, source="whatsapp")
 
