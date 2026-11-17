@@ -67,10 +67,17 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 ### 4. Railway
 
 1. New project → deploy from GitHub → `tttlai/realestai`, branch `main`.
-2. In the service settings:
-   - **Root Directory**: `/projects/whatsapp-leads-bot`
-   - **Config file path**: `/projects/whatsapp-leads-bot/railway.json` (Railway resolves this from
-     the repo root, not the root directory)
+2. In the service's **Settings** (Railway no longer reads config files for new services, so
+   everything is set here):
+   - **Source → Root Directory**: `/projects/whatsapp-leads-bot`
+   - **Source → Watch Paths**: `/projects/whatsapp-leads-bot/**`
+   - **Build**: the Dockerfile is picked up automatically
+   - **Deploy → Healthcheck Path**: `/health`
+   - **Deploy → Restart Policy**: On Failure, 5 retries
+
+   A service created before 2026-08-28 may still point at `railway.json` under **Config-as-code
+   → Railway Config File**. Railway stops reading that file on 2026-12-01: enter the values
+   above, then clear that field so the dashboard settings apply.
 3. Add variables:
 
    | Variable | Value |
@@ -150,11 +157,19 @@ always the full list: edit the source, not Supabase, or the next sync will undo 
    It prints what changed, and any rows it skipped with the reason (e.g. a price typed as `85`
    instead of `85 L`). A skipped row keeps its previous values.
 
-4. Keep it in sync automatically: in Railway, add a second service from the same repo with
-   **Root Directory** `/projects/whatsapp-leads-bot`, **Config file path**
-   `/projects/whatsapp-leads-bot/railway.sync.json` and the same variables as the bot (only the
-   Supabase ones are used). It runs `python -m app.sync_listings` every 30 minutes, which syncs
-   every broker that has a sheet, then exits. Change the schedule in `railway.sync.json`.
+4. Keep it in sync automatically with a second Railway service that runs on a schedule. In the
+   project: **+ Create → GitHub Repo** → `tttlai/realestai`, then in its **Settings**:
+   - **Source → Branch**: `main`; **Root Directory**: `/projects/whatsapp-leads-bot`; **Watch
+     Paths**: `/projects/whatsapp-leads-bot/**`
+   - **Deploy → Custom Start Command**: `python -m app.sync_listings`
+   - **Deploy → Cron Schedule**: `*/30 * * * *` (every 30 minutes, in UTC)
+   - **Deploy → Restart Policy**: Never
+   - No healthcheck and no public domain: it isn't a web server.
+   - **Variables**: the same six as the bot. To avoid copying secrets, reference them, e.g.
+     `SUPABASE_URL` = `${{<bot service name>.SUPABASE_URL}}`.
+
+   Each run syncs every broker that has a sheet, logs what changed, then exits. Its logs are
+   under the service's **Deployments** (look for `listings synced` or `listings sync failed`).
 
 If a sheet can't be read (unshared, deleted, or suddenly empty), the sync changes nothing and
 reports the problem. To really empty a broker's listings, run once with `--allow-empty`.
