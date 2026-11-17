@@ -23,6 +23,9 @@ class Broker(BaseModel):
     timezone: str = "Asia/Kolkata"
     business_hours: dict[str, list[str]] | None = None  # {"mon": ["10:00", "19:00"], ...}
     listings_sheet_url: str | None = None
+    fb_page_id: str | None = None
+    leads_access_token_enc: str | None = Field(default=None, repr=False)
+    inbound_email_key: str | None = None
     model: str | None = None
     active: bool = True
 
@@ -107,14 +110,23 @@ class Database:
         return Broker.model_validate(_rows(res.data)[0])
 
     async def get_or_create_lead(
-        self, broker_id: str, phone: str, *, name: str | None, source: str
+        self,
+        broker_id: str,
+        phone: str,
+        *,
+        name: str | None,
+        source: str,
+        source_detail: str | None = None,
     ) -> Lead:
         # Insert-if-absent so an existing lead's fields (e.g. a name the agent learned) are
         # never overwritten by intake data.
+        row = {"broker_id": broker_id, "phone": phone, "name": name, "source": source}
+        if source_detail:
+            row["source_detail"] = source_detail
         res = (
             await self._client.table("leads")
             .upsert(
-                {"broker_id": broker_id, "phone": phone, "name": name, "source": source},
+                row,
                 on_conflict="broker_id,phone",
                 ignore_duplicates=True,
             )
@@ -286,3 +298,77 @@ class Database:
             )
             .execute()
         )
+
+    async def get_broker_by_page_id(self, page_id: str) -> Broker | None:
+        return await self._one_broker("fb_page_id", page_id)
+
+    async def get_broker_by_email_key(self, key: str) -> Broker | None:
+        return await self._one_broker("inbound_email_key", key)
+
+    async def _one_broker(self, column: str, value: str) -> Broker | None:
+        res = (
+            await self._client.table("brokers")
+            .select("*")
+            .eq(column, value)
+            .eq("active", True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(res.data)
+        return Broker.model_validate(rows[0]) if rows else None
+
+    async def update_broker(self, broker_id: str, fields: dict[str, Any]) -> None:
+        await self._client.table("brokers").update(fields).eq("id", broker_id).execute()
+
+    async def start_intake_event(self, broker_id: str, source: str, external_id: str) -> bool:
+        """Record an incoming lead. Returns False if this one was already received (a retry)."""
+        res = (
+            await self._client.table("intake_events")
+            .upsert(
+                {"broker_id": broker_id, "source": source, "external_id": external_id},
+                on_conflict="source,external_id",
+                ignore_duplicates=True,
+            )
+            .execute()
+        )
+        return bool(res.data)
+
+    async def intake_event_exists(self, source: str, external_id: str) -> bool:
+        res = (
+            await self._client.table("intake_events")
+            .select("id")
+            .eq("source", source)
+            .eq("external_id", external_id)
+            .limit(1)
+            .execute()
+        )
+        return bool(_rows(res.data))
+
+    async def finish_intake_event(
+        self,
+        source: str,
+        external_id: str,
+        *,
+        status: str,
+        lead_id: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        await (
+            self._client.table("intake_events")
+            .update({"status": status, "lead_id": lead_id, "detail": detail})
+            .eq("source", source)
+            .eq("external_id", external_id)
+            .execute()
+        )
+
+    async def opener_sent_since(self, lead_id: str, since: datetime) -> bool:
+        res = (
+            await self._client.table("intake_events")
+            .select("id")
+            .eq("lead_id", lead_id)
+            .eq("status", "opener_sent")
+            .gte("created_at", since.isoformat())
+            .limit(1)
+            .execute()
+        )
+        return bool(_rows(res.data))

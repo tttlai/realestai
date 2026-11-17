@@ -77,3 +77,30 @@ async def test_no_retry_on_4xx() -> None:
         with pytest.raises(WhatsAppError, match="131047"):
             await send(WhatsAppClient(http, "v24.0"))
     assert route.call_count == 1
+
+
+@respx.mock
+async def test_send_template_needs_no_window() -> None:
+    route = respx.post(URL).respond(200, json={"messages": [{"id": "wamid.T"}]})
+    async with httpx.AsyncClient() as http:
+        wa_id = await WhatsAppClient(http, "v24.0").send_template(
+            phone_number_id="123",
+            access_token="tok",
+            to="919876543210",
+            name="lead_opener",
+            language="en",
+            body_params=["Asha", "Skyline", "Ravi Realty"],
+        )
+    assert wa_id == "wamid.T"
+    body = json.loads(route.calls.last.request.content)
+    assert body["type"] == "template"
+    assert body["template"]["components"][0]["parameters"][0] == {"type": "text", "text": "Asha"}
+
+
+@respx.mock
+async def test_graph_get_with_params() -> None:
+    route = respx.get("https://graph.facebook.com/v24.0/lg-1").respond(200, json={"id": "lg-1"})
+    async with httpx.AsyncClient() as http:
+        data = await WhatsAppClient(http, "v24.0").get("/lg-1", "tok", {"fields": "field_data"})
+    assert data == {"id": "lg-1"}
+    assert route.calls.last.request.url.params["fields"] == "field_data"

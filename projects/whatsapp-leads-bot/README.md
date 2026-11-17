@@ -3,10 +3,12 @@
 WhatsApp lead-qualification service for Indian real estate brokers. The full spec is in
 [CLAUDE.md](CLAUDE.md).
 
-**Current state: Phase 2 (agent).** Messages sent to a broker's WhatsApp number are stored in
+**Current state: Phase 3 (lead intake) built; Phase 2 (agent) live.** Messages sent to a broker's WhatsApp number are stored in
 Supabase and answered by a Claude agent that qualifies the lead (buy or rent, budget, area, BHK,
 timeline, home loan), quotes only the broker's listed properties, and hands hot or tricky leads
-to the broker. Every agent run is logged to `agent_logs`.
+to the broker. Every agent run is logged to `agent_logs`. Leads from Facebook/Instagram lead
+forms and from property-portal emails get a WhatsApp opener template, and the agent takes over
+when they reply.
 
 ## Local development
 
@@ -89,6 +91,8 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
    | `META_GRAPH_VERSION` | e.g. `v24.0` |
    | `TOKEN_ENCRYPTION_KEY` | key from step 2 |
    | `ANTHROPIC_API_KEY` | from [console.anthropic.com](https://console.anthropic.com) → API keys (phase 2) |
+   | `INBOUND_EMAIL_SECRET` | any long random string; portal emails only (phase 3, step 10) |
+   | `INBOUND_EMAIL_ADDRESS` | your Postmark inbound address; portal emails only (step 10) |
 
    Optional: `DEFAULT_MODEL` (default `claude-haiku-5-5`) and `AGENT_EFFORT` (`low`, `medium`
    (default) or `high`). Without `ANTHROPIC_API_KEY` the bot still stores messages but doesn't
@@ -229,6 +233,87 @@ still has an outbound row in `messages`. An `agent not configured` warning means
 `ANTHROPIC_API_KEY` isn't set. `reply mentions a price that is not listed` means the agent quoted
 an amount that matches no listing and wasn't said by the lead: read that conversation.
 
+### 10. Lead intake: lead forms and portal emails (phase 3)
+
+When a lead arrives from a Facebook/Instagram lead form or a portal email, the bot saves the
+lead, stores what they asked as the lead's first message, and sends the `lead_opener` template
+(the lead hasn't messaged yet, so free text isn't allowed). When they reply, the agent sees the
+form answers or the email and carries on. No opener is sent if the lead opted out, is already
+chatting with the bot, or got an opener in the last 24 hours. Every submission is recorded in
+`intake_events` with what happened:
+
+```sql
+select created_at, source, status, detail from intake_events order by created_at desc limit 20;
+```
+
+**a. Apply the migration** `supabase/migrations/20261118000000_lead_intake.sql` (SQL Editor,
+just that file).
+
+**b. Get the template approved** (start now: approval can take up to a day). In WhatsApp
+Manager → **Message templates** → **Create template**, for each broker's WhatsApp account:
+
+- Category **Utility**, name **`lead_opener`**, language **English** (`en`)
+- Body, exactly:
+  `Hi {{1}}, thanks for your enquiry about {{2}} with {{3}}. Are you looking to buy or rent?`
+- Sample values: `Asha`, `2 BHK in Skyline Residency`, `Ravi Realty`
+
+Meta may move it to the Marketing category, which is fine (it changes the per-message price).
+Until it's approved, openers fail with a template error and the event shows `failed`.
+
+**c. Facebook / Instagram lead forms**
+
+1. In Meta Business Settings, make sure the broker's **Facebook Page** is in the business
+   portfolio, and assign it to your **System User** with access to leads (full control is
+   simplest).
+2. Generate a System User token that, besides the WhatsApp permissions, has
+   `leads_retrieval`, `pages_show_list`, `pages_read_engagement` and `pages_manage_metadata`. If
+   the app doesn't offer these, add the lead-ads / Pages use case to the app in the App
+   Dashboard first.
+3. In the App Dashboard → **Webhooks**, choose the **Page** object, set the callback URL to
+   `https://<your-domain>/webhooks/meta-leads` with your `META_VERIFY_TOKEN`, click **Verify and
+   save**, and subscribe to **`leadgen`**.
+4. Connect the Page to the broker (it asks for the token from step 2):
+
+   ```sh
+   uv run python -m scripts.connect_facebook_page --phone-number-id <Phone number ID> --page-id <Page ID>
+   ```
+
+5. Name each lead form after the property (e.g. "Skyline Residency 2 BHK"): the form name is
+   what the opener says the lead enquired about. A custom question named `property` overrides
+   it.
+
+**d. Portal emails** (via [Postmark](https://postmarkapp.com) inbound)
+
+1. In Postmark, open your server → **Default Inbound Stream** → **Settings**. Note the inbound
+   address (like `abc123@inbound.postmarkapp.com`) and set the webhook URL to
+   `https://postmark:<INBOUND_EMAIL_SECRET>@<your-domain>/webhooks/email-leads`.
+2. In Railway, set `INBOUND_EMAIL_SECRET` (the same random string) and `INBOUND_EMAIL_ADDRESS`
+   (the inbound address). Put `INBOUND_EMAIL_ADDRESS` in your local `.env` too.
+3. Give the broker a key and get their forwarding address:
+
+   ```sh
+   uv run python -m scripts.set_inbound_email --phone-number-id <Phone number ID> --key ravi
+   ```
+
+4. In the broker's Gmail: **Settings → Forwarding → Add a forwarding address** with that
+   address. Gmail emails a confirmation code to it, which shows in the Railway logs as
+   `gmail forwarding confirmation received` with `confirmation_code`. Enter it in Gmail, then
+   add a filter such as `from:(99acres.com OR magicbricks.com OR housing.com)` → **Forward to**
+   that address.
+
+Each email is read by Claude (the same API key as the agent), which pulls out the enquirer's
+name, phone, the property and the portal. Emails that aren't enquiries (reports, receipts,
+newsletters) are recorded as `skipped_not_a_lead`.
+
+**e. Acceptance check** (use your own phone number in test leads, never a real lead's)
+
+1. [Lead Ads Testing Tool](https://developers.facebook.com/tools/lead-ads-testing): pick the
+   Page and form, create a test lead with your number. The opener arrives on WhatsApp within
+   seconds and `intake_events` shows `opener_sent` for `meta_ads`.
+2. Email yourself a sample enquiry in the style of a 99acres email with your own number in it
+   and let the filter forward it (or forward it by hand). Same result, with `portal_email`.
+3. Reply to an opener: the agent answers knowing what you enquired about.
+
 ## How the agent works
 
 - Each reply: the last 20 messages, the broker's available properties and the lead's saved details
@@ -250,6 +335,9 @@ an amount that matches no listing and wasn't said by the lead: read that convers
   with calendar booking. Until then, check for handed-off leads:
   `select name, phone, budget, area, timeline from leads where status = 'handed_off';`
 - Site visits are not booked yet: the agent asks for a preferred time and hands over (phase 5).
+- Leads who never reply to the opener get no follow-ups yet (phase 4).
+- If a lead's number isn't on WhatsApp, Meta accepts the opener and then reports it failed: it
+  shows as an `outbound message failed` warning (error 131026).
 
 - Messages are handled in-process after Meta gets its 200. If the service restarts mid-way, that
   message may go unanswered (Meta won't resend it, since it already got a 200). It is still in

@@ -21,8 +21,9 @@ One codebase serves every broker. Each broker is a row in `brokers`.
 |---|---|
 | 1. Echo bot | ✅ Passed 2026-11-16 on a registered business number (Meta business verified, app Live) |
 | 2. Agent | ✅ Built and tested 2026-11-17. Listings sync from Google Sheets added on top |
-| 3. Lead intake | Next |
-| 4-7 | Not started |
+| 3. Lead intake | Built 2026-11-18 (Meta Lead Ads + portal emails via Postmark, English `lead_opener`). Awaiting setup and acceptance: template approval, Page connection, Postmark |
+| 4. Templates and follow-ups | Next |
+| 5-7 | Not started |
 
 What phase 2 left for later: hand-offs set `leads.status = 'handed_off'` but the broker isn't
 alerted yet, and the calendar tools (`get_visit_slots`, `book_visit`) aren't exposed: both come in
@@ -90,8 +91,9 @@ app/
     sync.py            # upsert by external_id, mark missing 'removed'
   sync_listings.py     # cron entrypoint: sync every broker with a sheet
   intake/
-    normalise.py       # phone normalisation, dedupe, lead upsert
-    email_parser.py    # Claude-based extraction from portal emails
+    normalise.py       # phone normalisation (wa_id kept as is; typed numbers get +91)
+    leads.py           # shared intake: intake_events dedupe, lead upsert, lead_opener
+    email_parser.py    # Claude-based extraction from portal emails (structured output)
   calendar/
     google.py
   transcription.py
@@ -99,6 +101,8 @@ app/
 scripts/               # run locally, not deployed (the Docker image holds app/ only)
   seed_broker.py       # add or update a broker (encrypts the token)
   seed_properties.py   # load listings from a JSON file
+  connect_facebook_page.py  # subscribe the app to a broker's Page, save its Page token
+  set_inbound_email.py # give a broker an inbound email key, print their forwarding address
   eval_agent.py        # play tests/fixtures/conversations.json against the real API
   sample_properties.json
   listings_template.csv  # Google Sheet template
@@ -124,14 +128,18 @@ TRANSCRIPTION_PROVIDER=whisper   # or sarvam
 OPENAI_API_KEY=               # if whisper
 SARVAM_API_KEY=               # if sarvam
 GOOGLE_SERVICE_ACCOUNT_JSON=
-INBOUND_EMAIL_SECRET=         # shared secret on the email webhook
+INBOUND_EMAIL_SECRET=         # basic-auth password the email provider sends; unset = endpoint off
+INBOUND_EMAIL_ADDRESS=        # provider's inbound address, to print forwarding addresses
 ```
 
 ## Database schema (Supabase migration)
 
 The migrations in `supabase/migrations/` are the source of truth; this is the original design.
 Added since: `properties.external_id` (unique per broker), `properties.status` may be
-`removed`, and `brokers.listings_sheet_url` (`20261117000000_listing_sync.sql`).
+`removed`, and `brokers.listings_sheet_url` (`20261117000000_listing_sync.sql`);
+`brokers.fb_page_id`, `brokers.leads_access_token_enc`, `brokers.inbound_email_key` and the
+`intake_events` table: one row per form submission or email, unique on source + external ID,
+with the outcome (`20261118000000_lead_intake.sql`).
 
 ```sql
 create table brokers (
@@ -235,7 +243,7 @@ create index on messages (lead_id, created_at);
 | GET | `/webhooks/whatsapp` | Meta verification: echo `hub.challenge` if `hub.verify_token` matches |
 | POST | `/webhooks/whatsapp` | Verify signature → 200 → background: route by `phone_number_id` to broker, dedupe, store, transcribe audio, run agent, send reply |
 | POST | `/webhooks/meta-leads` | Fetch lead details from Graph API, upsert lead, send opener template, schedule follow-ups |
-| POST | `/webhooks/email-leads` | Check shared secret, Claude extracts `{name, phone, property, portal}`, upsert lead, send opener template |
+| POST | `/webhooks/email-leads` | Postmark inbound JSON, basic auth with `INBOUND_EMAIL_SECRET`, broker from the `+key` in the address; Claude extracts `{name, phone, property, portal}`, upsert lead, send opener template |
 | GET | `/health` | Liveness check for Railway |
 
 Cron (Railway cron service, every 15 minutes): `python -m app.followups` sends due follow-ups that are not sent, not cancelled, and whose lead is not opted out and has not replied since scheduling.
