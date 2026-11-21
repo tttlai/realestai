@@ -157,3 +157,25 @@ async def test_listing_upsert_status_and_agent_log(db: Database, broker: Broker)
     )
     rows = await db._client.table("agent_logs").select("*").eq("lead_id", lead.id).execute()
     assert rows.data[0]["tool_calls"] == [{"name": "update_lead", "input": {"area": "Wakad"}}]
+
+
+async def test_intake_events_dedupe_and_broker_lookups(db: Database, broker: Broker) -> None:
+    key = f"k{uuid.uuid4().hex[:8]}"
+    page = f"page-{uuid.uuid4()}"
+    await db.update_broker(broker.id, {"inbound_email_key": key, "fb_page_id": page})
+    assert (await db.get_broker_by_email_key(key)).id == broker.id  # type: ignore[union-attr]
+    assert (await db.get_broker_by_page_id(page)).id == broker.id  # type: ignore[union-attr]
+
+    lead = await db.get_or_create_lead(
+        broker.id, "919876543210", name="Asha", source="meta_ads", source_detail="Skyline form"
+    )
+    assert lead.source_detail == "Skyline form"
+    external_id = f"lg-{uuid.uuid4()}"
+    assert await db.start_intake_event(broker.id, "meta_ads", external_id) is True
+    assert await db.start_intake_event(broker.id, "meta_ads", external_id) is False
+    assert await db.intake_event_exists("meta_ads", external_id)
+
+    since = datetime(2000, 1, 1, tzinfo=UTC)
+    assert await db.opener_sent_since(lead.id, since) is False
+    await db.finish_intake_event("meta_ads", external_id, status="opener_sent", lead_id=lead.id)
+    assert await db.opener_sent_since(lead.id, since) is True

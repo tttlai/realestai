@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     default_model: str = "claude-haiku-5-5"  # a broker's own `model` overrides this
     agent_effort: str = "medium"  # low / medium / high: how much the model thinks per reply
 
+    # Portal emails (phase 3). The email provider's webhook must send this as the HTTP basic-auth
+    # password; without it the email endpoint is switched off.
+    inbound_email_secret: SecretStr | None = None
+    # The provider's inbound address, e.g. abc123@inbound.postmarkapp.com. Only used to print
+    # each broker's forwarding address.
+    inbound_email_address: str | None = None
+
     log_level: str = "INFO"
 
 
