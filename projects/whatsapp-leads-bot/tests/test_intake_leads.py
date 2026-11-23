@@ -176,13 +176,14 @@ async def test_send_failure_is_recorded_and_raised(
         await intake_lead(db, whatsapp, db.brokers[0], incoming())
     assert (db.intake_events[0]["status"], db.intake_events[0]["detail"]) == (
         "failed",
-        "WhatsAppError",
+        "graph api returned 400: code=132001 message='template missing'",
     )
 
 
 async def test_record_skipped_only_once(db: FakeDatabase) -> None:
-    await record_skipped(db, db.brokers[0], "portal_email", "m1", "skipped_not_a_lead")
-    await record_skipped(db, db.brokers[0], "portal_email", "m1", "failed")
+    broker_id = db.brokers[0].id
+    await record_skipped(db, broker_id, "portal_email", "m1", "skipped_not_a_lead")
+    await record_skipped(db, broker_id, "portal_email", "m1", "failed")
     [event] = db.intake_events
     assert event["status"] == "skipped_not_a_lead"
 

@@ -246,6 +246,21 @@ chatting with the bot, or got an opener in the last 24 hours. Every submission i
 select created_at, source, status, detail from intake_events order by created_at desc limit 20;
 ```
 
+| `status` | Meaning | What to do |
+|---|---|---|
+| `opener_sent` | Lead saved, opener sent | Nothing |
+| `skipped_recent_opener` / `skipped_in_conversation` / `skipped_opted_out` | Lead saved; no opener on purpose | Nothing |
+| `skipped_bad_phone` / `skipped_no_phone` | No usable phone number (e.g. the testing tool's dummy data) | Test with a real number |
+| `skipped_not_a_lead` | The email wasn't an enquiry | Nothing |
+| `skipped_unknown_page` | The Page isn't connected to a broker | Run `scripts.connect_facebook_page` for it |
+| `skipped_unknown_address` | No broker uses that email key | Run `scripts.set_inbound_email` |
+| `failed` | Something broke; `detail` says what, with Meta's error code if Meta refused | See below |
+
+Common `failed` details: `code=132001` (template missing or not approved in English),
+`code=132000` (template variables don't match), `code=190` (expired token: re-run
+`seed_broker` or `connect_facebook_page`), `couldn't read the lead: ... code=100/200`
+(the Page token lacks lead access).
+
 **a. Apply the migration** `supabase/migrations/20261118000000_lead_intake.sql` (SQL Editor,
 just that file).
 

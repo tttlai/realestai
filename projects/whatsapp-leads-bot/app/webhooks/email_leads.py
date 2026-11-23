@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Annotated, Any
 
+import anthropic
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from app.config import Settings, get_settings
@@ -103,38 +104,74 @@ async def process_email(
 async def handle_email(
     email: InboundEmail, db: Database, whatsapp: WhatsAppClient, parser: EmailParser | None
 ) -> None:
-    broker = await db.get_broker_by_email_key(email.broker_key)
-    if broker is None:
-        log.warning("no active broker for this email address", extra={"key": email.broker_key})
-        return
-    add_log_context(broker_id=broker.id)
-
+    """Every email ends up in intake_events (except Gmail's forwarding confirmation and repeats),
+    including ones that fail before a lead exists."""
     if GMAIL_FORWARDING in email.sender.lower():
         # Gmail sends a code to confirm a new forwarding address; the broker needs it.
         code = re.search(r"#(\d+)", email.subject)
         log.warning(
             "gmail forwarding confirmation received",
-            extra={"confirmation_code": code.group(1) if code else None, "subject": email.subject},
+            extra={
+                "confirmation_code": code.group(1) if code else None,
+                "subject": email.subject,
+                "key": email.broker_key,
+            },
         )
         return
     if await db.intake_event_exists(SOURCE, email.message_id):
         log.info("duplicate email delivery ignored")
         return
+
+    broker = await db.get_broker_by_email_key(email.broker_key)
+    if broker is None:
+        log.warning("no active broker for this email address", extra={"key": email.broker_key})
+        await record_skipped(
+            db,
+            None,
+            SOURCE,
+            email.message_id,
+            "skipped_unknown_address",
+            f"no broker uses the email key '{email.broker_key}': "
+            "run scripts.set_inbound_email for them",
+        )
+        return
+    add_log_context(broker_id=broker.id)
+
     if parser is None:
         log.warning("agent not configured (ANTHROPIC_API_KEY is not set); email not read")
+        await record_skipped(
+            db,
+            broker.id,
+            SOURCE,
+            email.message_id,
+            "failed",
+            "ANTHROPIC_API_KEY isn't set, so the email couldn't be read",
+        )
         return
-
-    extracted = await parser.parse(
-        sender=email.sender,
-        subject=email.subject,
-        body=email.body,
-        broker_number=broker.alert_number,
-    )
+    try:
+        extracted = await parser.parse(
+            sender=email.sender,
+            subject=email.subject,
+            body=email.body,
+            broker_number=broker.alert_number,
+        )
+    except anthropic.APIError as e:
+        await record_skipped(
+            db,
+            broker.id,
+            SOURCE,
+            email.message_id,
+            "failed",
+            f"Claude couldn't read the email ({type(e).__name__})",
+        )
+        raise
     if extracted is None:
-        await record_skipped(db, broker, SOURCE, email.message_id, "failed", "could not read email")
+        await record_skipped(
+            db, broker.id, SOURCE, email.message_id, "failed", "Claude couldn't read the email"
+        )
         return
     if not extracted.is_lead:
-        await record_skipped(db, broker, SOURCE, email.message_id, "skipped_not_a_lead")
+        await record_skipped(db, broker.id, SOURCE, email.message_id, "skipped_not_a_lead")
         log.info("email is not an enquiry; skipped")
         return
     await intake_lead(db, whatsapp, broker, to_incoming(email, extracted))

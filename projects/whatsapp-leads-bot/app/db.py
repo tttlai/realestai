@@ -320,7 +320,9 @@ class Database:
     async def update_broker(self, broker_id: str, fields: dict[str, Any]) -> None:
         await self._client.table("brokers").update(fields).eq("id", broker_id).execute()
 
-    async def start_intake_event(self, broker_id: str, source: str, external_id: str) -> bool:
+    async def start_intake_event(
+        self, broker_id: str | None, source: str, external_id: str
+    ) -> bool:
         """Record an incoming lead. Returns False if this one was already received (a retry)."""
         res = (
             await self._client.table("intake_events")
