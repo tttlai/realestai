@@ -145,6 +145,14 @@ async def test_unusable_phone_is_recorded_not_sent(
     assert db.intake_events[0]["status"] == status
 
 
+async def test_brokers_own_alert_number_is_not_made_a_lead(
+    db: FakeDatabase, whatsapp: WhatsAppClient, graph: respx.MockRouter
+) -> None:
+    status = await intake_lead(db, whatsapp, db.brokers[0], incoming(phone="+91 98000 00000"))
+    assert status == "skipped_broker_number"
+    assert db.leads == [] and not sent(graph)
+
+
 async def test_opted_out_lead_gets_nothing(
     db: FakeDatabase, whatsapp: WhatsAppClient, graph: respx.MockRouter
 ) -> None:

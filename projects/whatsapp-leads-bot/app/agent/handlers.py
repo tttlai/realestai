@@ -16,6 +16,10 @@ from app.db import Database, Lead
 log = logging.getLogger(__name__)
 
 
+# Hand-off reason when the agent itself couldn't reply; not one the model can choose.
+ASSISTANT_FAILED = "assistant_failed"
+
+
 class UpdateLeadInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -89,12 +93,21 @@ class ToolHandlers:
         return ToolOutcome("Saved.")
 
     async def hand_off(self, data: HandoffInput) -> ToolOutcome:
+        await self._mark_handed_off(Handoff(reason=data.reason, summary=data.summary))
+        return ToolOutcome("Handed over. The broker will follow up with the lead.")
+
+    async def hand_off_after_failure(self, summary: str) -> None:
+        """The agent couldn't reply. A hand-off the model already made this turn is kept: its
+        summary says what the lead wants."""
+        if self.handoff is None:
+            await self._mark_handed_off(Handoff(reason=ASSISTANT_FAILED, summary=summary))
+
+    async def _mark_handed_off(self, handoff: Handoff) -> None:
         if self.lead.status != "handed_off":
             await self._db.update_lead(self.lead.id, {"status": "handed_off"})
             self.lead = self.lead.model_copy(update={"status": "handed_off"})
-        self.handoff = Handoff(reason=data.reason, summary=data.summary)
-        log.info("lead handed to broker", extra={"reason": data.reason})
-        return ToolOutcome("Handed over. The broker will follow up with the lead.")
+        self.handoff = handoff
+        log.info("lead handed to broker", extra={"reason": handoff.reason})
 
     async def opt_out(self) -> ToolOutcome:
         await self._db.mark_opted_out(self.lead.id)

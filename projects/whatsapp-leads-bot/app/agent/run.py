@@ -14,7 +14,7 @@ from typing import Any
 import anthropic
 from anthropic.types import Message, MessageParam
 
-from app.agent.handlers import Handoff, HandoffInput, ToolHandlers
+from app.agent.handlers import Handoff, ToolHandlers
 from app.agent.prices import unlisted_amounts
 from app.agent.prompt import build_system, utc_now
 from app.agent.tools import MARK_OPTED_OUT, TOOLS
@@ -124,10 +124,14 @@ class Agent:
             if made_up := unlisted_amounts(text, properties, lead_texts):
                 log.warning("reply mentions a price that is not listed", extra={"amounts": made_up})
         else:
-            log.warning("agent produced no reply; handing to broker", extra={"reason": failure})
-            await handlers.hand_off(HandoffInput(summary=FALLBACK_SUMMARY, reason="other"))
+            log.warning("agent produced no reply", extra={"reason": failure})
             run.tool_calls.append({"name": "fallback", "input": {"reason": failure}})
-            text = FALLBACK_REPLY.format(broker=broker.name)
+            if handlers.opted_out:
+                # They opted out before the failure: confirm that, and promise no contact.
+                text = STOP_CONFIRMATION
+            else:
+                await handlers.hand_off_after_failure(FALLBACK_SUMMARY)
+                text = FALLBACK_REPLY.format(broker=broker.name)
 
         await self._db.insert_agent_log(
             lead_id=lead.id,

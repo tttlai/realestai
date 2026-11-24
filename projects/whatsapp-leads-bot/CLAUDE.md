@@ -23,11 +23,11 @@ One codebase serves every broker. Each broker is a row in `brokers`.
 | 2. Agent | ✅ Built and tested 2026-11-17. Listings sync from Google Sheets added on top |
 | 3. Lead intake | Built 2026-11-18 (Meta Lead Ads + portal emails via Postmark, English `lead_opener`). Awaiting setup and acceptance: template approval, Page connection, Postmark |
 | 4. Templates and follow-ups | Next |
-| 5-7 | Not started |
+| 5. Calendar and alerts | Broker alerts built 2026-11-24, ahead of phase 4 at the user's request. Calendar not started |
+| 6-7 | Not started |
 
-What phase 2 left for later: hand-offs set `leads.status = 'handed_off'` but the broker isn't
-alerted yet, and the calendar tools (`get_visit_slots`, `book_visit`) aren't exposed: both come in
-phase 5. Non-text messages are stored but not answered until phase 6.
+What phase 2 left for later: the calendar tools (`get_visit_slots`, `book_visit`) aren't exposed
+until the calendar part of phase 5. Non-text messages are stored but not answered until phase 6.
 
 **Setup and operating steps live in [README.md](README.md)** (Supabase, Meta, Railway, adding a
 broker, loading listings, the eval script, acceptance checks). Keep them there, not here; this
@@ -62,6 +62,7 @@ Models: default `claude-haiku-5-5` for conversation turns; make the model config
 - **Log every inbound message, outbound message, Claude call and tool call** to Supabase so any bot decision can be explained to a broker.
 - Phone numbers are always stored as E.164 without `+`, e.g. `919876543210`. Numbers from WhatsApp (`wa_id`) already include the country code and are stored unchanged; only numbers typed by people (forms, emails) are normalised.
 - **Listings come from the broker's source** (Google Sheet or JSON file), matched on `properties.external_id`. A sync never deletes: listings missing from the source get `status = 'removed'`, so rows (and visits pointing at them) survive. Edits belong in the source, not in Supabase.
+- **The broker's `alert_number` is never a lead.** Messages from it go to `broker_messages` and aren't answered; intake skips it.
 
 ## Project structure
 
@@ -90,6 +91,7 @@ app/
     sheet.py           # read a Google Sheet (CSV export) into listings
     sync.py            # upsert by external_id, mark missing 'removed'
   sync_listings.py     # cron entrypoint: sync every broker with a sheet
+  alerts.py            # WhatsApp alert to the broker when a lead is handed over
   intake/
     normalise.py       # phone normalisation (wa_id kept as is; typed numbers get +91)
     leads.py           # shared intake: intake_events dedupe, lead upsert, lead_opener
@@ -139,7 +141,9 @@ Added since: `properties.external_id` (unique per broker), `properties.status` m
 `removed`, and `brokers.listings_sheet_url` (`20261117000000_listing_sync.sql`);
 `brokers.fb_page_id`, `brokers.leads_access_token_enc`, `brokers.inbound_email_key` and the
 `intake_events` table: one row per form submission or email, unique on source + external ID,
-with the outcome (`20261118000000_lead_intake.sql`).
+with the outcome (`20261118000000_lead_intake.sql`); and `broker_messages`, alerts to and messages
+from a broker's alert number, kept apart from `messages` because the agent reads that
+(`20261124000000_broker_messages.sql`).
 
 ```sql
 create table brokers (
@@ -342,6 +346,8 @@ Call Claude with tools → execute any tool calls in `agent/handlers.py` → ret
 | `visit_reminder` | Utility | Morning-of reminder |
 | `followup_day1` | Marketing | Gentle nudge |
 | `followup_day3` | Marketing | Final nudge, then stop |
+| `hot_lead_alert` | Utility | To the broker: hot lead ({{name}}, {{number}}, {{summary}}) |
+| `lead_needs_reply` | Utility | To the broker: any other hand-off (question, complaint, person, assistant failed) |
 
 Keep template names and parameter builders in `whatsapp/templates.py`.
 

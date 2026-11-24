@@ -72,6 +72,12 @@ async def _intake(
         phone = normalise_phone(incoming.phone)
     except InvalidPhoneError:
         return "skipped_bad_phone", None, "phone number could not be read"
+    if phone == broker.alert_number:
+        return (
+            "skipped_broker_number",
+            None,
+            "this is the broker's own alert number: use a different number to test as a lead",
+        )
 
     lead = await db.get_or_create_lead(
         broker.id,

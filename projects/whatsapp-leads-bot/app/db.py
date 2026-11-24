@@ -374,3 +374,59 @@ class Database:
             .execute()
         )
         return bool(_rows(res.data))
+
+    async def insert_broker_message(
+        self,
+        *,
+        broker_id: str,
+        lead_id: str | None,
+        direction: Direction,
+        kind: str,
+        body: str | None,
+        status: str,
+        reason: str | None = None,
+        wa_message_id: str | None = None,
+        detail: str | None = None,
+    ) -> bool:
+        """Store an alert or a broker's message. False if `wa_message_id` was already stored."""
+        row = {
+            "broker_id": broker_id,
+            "lead_id": lead_id,
+            "direction": direction,
+            "kind": kind,
+            "reason": reason,
+            "body": body,
+            "wa_message_id": wa_message_id,
+            "status": status,
+            "detail": detail,
+        }
+        table = self._client.table("broker_messages")
+        if wa_message_id is None:
+            await table.insert(row).execute()
+            return True
+        res = await table.upsert(row, on_conflict="wa_message_id", ignore_duplicates=True).execute()
+        return bool(res.data)
+
+    async def count_alerts_sent(self, lead_id: str, since: datetime, *, reason: str) -> int:
+        res = (
+            await self._client.table("broker_messages")
+            .select("id")
+            .eq("lead_id", lead_id)
+            .eq("direction", "outbound")
+            .eq("status", "sent")
+            .eq("reason", reason)
+            .gte("created_at", since.isoformat())
+            .execute()
+        )
+        return len(_rows(res.data))
+
+    async def mark_alert_failed(self, wa_message_id: str, detail: str) -> bool:
+        """Record that Meta couldn't deliver an alert. False if it isn't one of our alerts."""
+        res = (
+            await self._client.table("broker_messages")
+            .update({"status": "failed", "detail": detail})
+            .eq("wa_message_id", wa_message_id)
+            .eq("direction", "outbound")
+            .execute()
+        )
+        return bool(res.data)
