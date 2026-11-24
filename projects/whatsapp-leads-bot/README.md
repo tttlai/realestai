@@ -246,6 +246,22 @@ chatting with the bot, or got an opener in the last 24 hours. Every submission i
 select created_at, source, status, detail from intake_events order by created_at desc limit 20;
 ```
 
+| `status` | Meaning | What to do |
+|---|---|---|
+| `opener_sent` | Lead saved, opener sent | Nothing |
+| `skipped_recent_opener` / `skipped_in_conversation` / `skipped_opted_out` | Lead saved; no opener on purpose | Nothing |
+| `skipped_bad_phone` / `skipped_no_phone` | No usable phone number (e.g. the testing tool's dummy data) | Test with a real number |
+| `skipped_broker_number` | The number is the broker's own alert number | Test with a different number |
+| `skipped_not_a_lead` | The email wasn't an enquiry | Nothing |
+| `skipped_unknown_page` | The Page isn't connected to a broker | Run `scripts.connect_facebook_page` for it |
+| `skipped_unknown_address` | No broker uses that email key | Run `scripts.set_inbound_email` |
+| `failed` | Something broke; `detail` says what, with Meta's error code if Meta refused | See below |
+
+Common `failed` details: `code=132001` (template missing or not approved in English),
+`code=132000` (template variables don't match), `code=190` (expired token: re-run
+`seed_broker` or `connect_facebook_page`), `couldn't read the lead: ... code=100/200`
+(the Page token lacks lead access).
+
 **a. Apply the migration** `supabase/migrations/20261118000000_lead_intake.sql` (SQL Editor,
 just that file).
 
@@ -314,6 +330,46 @@ newsletters) are recorded as `skipped_not_a_lead`.
    and let the filter forward it (or forward it by hand). Same result, with `portal_email`.
 3. Reply to an opener: the agent answers knowing what you enquired about.
 
+### 11. Broker alerts
+
+When the agent hands a lead over, the broker gets a WhatsApp template on their `alert_number`,
+right after the lead is answered. `hot_lead` hand-offs use `hot_lead_alert`; a question the
+listings don't answer, a complaint, a request for a person, or the assistant failing use
+`lead_needs_reply`.
+
+1. Apply the migration `supabase/migrations/20261124000000_broker_messages.sql` **before**
+   deploying this: without its table, no alerts are sent.
+2. Get both templates approved on each broker's WhatsApp account, like `lead_opener`: category
+   **Utility**, language **English** (`en`), numbered variables, bodies exactly:
+   - `hot_lead_alert`:
+     `New hot lead for you: {{1}}, {{2}}. {{3}} Please call or WhatsApp them soon.`
+   - `lead_needs_reply`:
+     `A lead needs a reply from you: {{1}}, {{2}}. {{3}} Please call or WhatsApp them soon.`
+
+   Samples: `Asha Patil`, `+91 98765 43210`, and
+   `Wants a 2 BHK in Wakad, budget 90 L, site visit Saturday 11 AM.`
+3. **Use a different phone to act as a lead.** Messages from the alert number are the broker's:
+   they are stored in `broker_messages` and not answered, and a form or email with that number
+   is recorded as `skipped_broker_number`. To change the alert number (country code, no `+`):
+
+   ```sql
+   update brokers set alert_number = '91XXXXXXXXXX' where phone_number_id = '<Phone number ID>';
+   ```
+
+To keep a chatty lead from flooding the broker, at most 3 alerts per lead and reason go out in
+24 hours (1 when the assistant itself is failing). No alert is sent about a lead who opted out.
+Every alert is recorded, with why if it wasn't sent:
+
+```sql
+select created_at, reason, status, detail, body from broker_messages
+where direction = 'outbound' order by created_at desc limit 20;
+```
+
+`sent` means Meta accepted it; if Meta later reports it undelivered, it changes to `failed`.
+
+**Check:** from a phone that isn't the alert number, ask for a site visit and give a day and
+time. The lead gets a reply, then the alert arrives on the alert number and shows as `sent`.
+
 ## How the agent works
 
 - Each reply: the last 20 messages, the broker's available properties and the lead's saved details
@@ -330,10 +386,9 @@ newsletters) are recorded as `skipped_not_a_lead`.
 
 ## Known limitations
 
-- **The broker is not alerted yet.** Hand-offs set the lead's `status` to `handed_off` (the reason
-  and summary are in `agent_logs`), but the WhatsApp alert to `alert_number` comes in phase 5,
-  with calendar booking. Until then, check for handed-off leads:
-  `select name, phone, budget, area, timeline from leads where status = 'handed_off';`
+- Alerts are not retried. If one shows `failed` in `broker_messages`, contact the lead from there;
+  all handed-over leads: `select name, phone, budget, area from leads where status = 'handed_off';`
+- A broker's reply to an alert is stored but nothing acts on it.
 - Site visits are not booked yet: the agent asks for a preferred time and hands over (phase 5).
 - Leads who never reply to the opener get no follow-ups yet (phase 4).
 - If a lead's number isn't on WhatsApp, Meta accepts the opener and then reports it failed: it

@@ -14,7 +14,7 @@ from app.crypto import decrypt_token
 from app.db import Broker, Database
 from app.intake.normalise import InvalidPhoneError, normalise_phone
 from app.log import add_log_context
-from app.whatsapp.client import WhatsAppClient
+from app.whatsapp.client import WhatsAppClient, WhatsAppError
 from app.whatsapp.templates import LEAD_OPENER, lead_opener_params
 from app.whatsapp.window import is_window_open
 
@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 
 # One opener per lead per day, however many forms or portal emails they trigger.
 OPENER_COOLDOWN = timedelta(hours=24)
+MAX_DETAIL_CHARS = 500
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,7 @@ async def intake_lead(
             incoming.external_id,
             status="failed",
             lead_id=lead_id,
-            detail=type(e).__name__,
+            detail=describe_error(e),
         )
         raise
     await db.finish_intake_event(
@@ -71,6 +72,12 @@ async def _intake(
         phone = normalise_phone(incoming.phone)
     except InvalidPhoneError:
         return "skipped_bad_phone", None, "phone number could not be read"
+    if phone == broker.alert_number:
+        return (
+            "skipped_broker_number",
+            None,
+            "this is the broker's own alert number: use a different number to test as a lead",
+        )
 
     lead = await db.get_or_create_lead(
         broker.id,
@@ -119,12 +126,28 @@ async def _intake(
 
 async def record_skipped(
     db: Database,
-    broker: Broker,
+    broker_id: str | None,
     source: str,
     external_id: str,
     status: str,
     detail: str | None = None,
 ) -> None:
-    """Record something that arrived but isn't a lead to contact (e.g. a non-enquiry email)."""
-    if await db.start_intake_event(broker.id, source, external_id):
-        await db.finish_intake_event(source, external_id, status=status, detail=detail)
+    """Record something that arrived but won't get an opener: not a lead, or it failed before
+    a lead could be made (unknown Page or address, lead unreadable). `broker_id` is None when no
+    broker matched."""
+    if await db.start_intake_event(broker_id, source, external_id):
+        await db.finish_intake_event(
+            source, external_id, status=status, detail=_cap(detail) if detail else None
+        )
+
+
+def describe_error(error: Exception) -> str:
+    """What to store in intake_events.detail. Meta's errors say what to fix (code and message,
+    never the token); other errors only by type, since their text may echo lead data."""
+    if isinstance(error, WhatsAppError):
+        return _cap(str(error))
+    return type(error).__name__
+
+
+def _cap(text: str) -> str:
+    return text if len(text) <= MAX_DETAIL_CHARS else text[: MAX_DETAIL_CHARS - 1] + "…"

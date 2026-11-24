@@ -4,7 +4,9 @@ import logging
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
+import anthropic
 import httpx
+import httpx2
 import pytest
 import respx
 
@@ -141,7 +143,7 @@ async def test_unreadable_extraction_is_recorded_as_failed(
     await post(client, email())
     assert (db.intake_events[0]["status"], db.intake_events[0]["detail"]) == (
         "failed",
-        "could not read email",
+        "Claude couldn't read the email",
     )
 
 
@@ -161,11 +163,14 @@ async def test_endpoint_is_off_without_a_secret(client: httpx.AsyncClient) -> No
     assert (await post(client, email())).status_code == 404
 
 
-async def test_unknown_broker_key_is_ignored(
+async def test_unknown_broker_key_is_recorded_not_read(
     client: httpx.AsyncClient, llm: FakeLLM, db: FakeDatabase
 ) -> None:
     await post(client, email(MailboxHash="nobody", OriginalRecipient="abc+nobody@x.com"))
-    assert llm.calls == [] and db.intake_events == []
+    assert llm.calls == []
+    [event] = db.intake_events
+    assert (event["broker_id"], event["status"]) == (None, "skipped_unknown_address")
+    assert "'nobody'" in event["detail"]
 
 
 async def test_gmail_forwarding_confirmation_code_is_logged(
@@ -182,12 +187,40 @@ async def test_gmail_forwarding_confirmation_code_is_logged(
     assert record.confirmation_code == "123456789"  # type: ignore[attr-defined]
 
 
-async def test_without_api_key_emails_are_not_read(
+async def test_without_api_key_emails_are_recorded_not_read(
     client: httpx.AsyncClient, db: FakeDatabase, llm: FakeLLM
 ) -> None:
     app.state.email_parser = None
     await post(client, email())
-    assert llm.calls == [] and db.intake_events == []
+    assert llm.calls == []
+    assert (db.intake_events[0]["status"], db.intake_events[0]["detail"]) == (
+        "failed",
+        "ANTHROPIC_API_KEY isn't set, so the email couldn't be read",
+    )
+
+
+async def test_claude_api_failure_is_recorded(
+    client: httpx.AsyncClient, db: FakeDatabase, llm: FakeLLM, graph: respx.MockRouter
+) -> None:
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    llm.queue(anthropic.APIConnectionError(request=request))
+    await post(client, email())
+    assert not graph.routes[0].called
+    assert db.intake_events[0]["detail"] == "Claude couldn't read the email (APIConnectionError)"
+
+
+async def test_gmail_confirmation_is_logged_even_before_the_key_is_set(
+    client: httpx.AsyncClient, db: FakeDatabase, caplog: pytest.LogCaptureFixture
+) -> None:
+    gmail = email(
+        From="forwarding-noreply@google.com",
+        Subject="(#987654321) Gmail Forwarding Confirmation",
+        MailboxHash="newbroker",
+    )
+    with caplog.at_level(logging.WARNING):
+        await post(client, gmail)
+    assert any(getattr(r, "confirmation_code", None) == "987654321" for r in caplog.records)
+    assert db.intake_events == []
 
 
 def test_broker_key_from_recipient_when_no_mailbox_hash() -> None:

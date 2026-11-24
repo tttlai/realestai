@@ -20,6 +20,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from fastapi.responses import PlainTextResponse
 
 from app.agent.run import Agent
+from app.alerts import alert_broker
 from app.config import Settings, get_settings
 from app.crypto import decrypt_token
 from app.db import Database
@@ -177,11 +178,15 @@ async def process_payload(
 
 
 async def log_failed_delivery(failure: FailedDelivery, db: Database) -> None:
-    """Log the failure. The recipient's number is left out; wa_message_id identifies the message."""
+    """Log the failure, and mark it on the alert if it was one. The recipient's number is left
+    out of the log; wa_message_id identifies the message."""
     broker = await db.get_broker_by_phone_number_id(failure.phone_number_id)
     if broker is not None:
         add_log_context(broker_id=broker.id)
     log.warning("outbound message failed")
+    if failure.wa_message_id is not None:
+        detail = f"not delivered: code={failure.error_code} {failure.error_title or ''}".strip()
+        await db.mark_alert_failed(failure.wa_message_id, detail)
 
 
 async def handle_message(
@@ -197,6 +202,20 @@ async def handle_message(
     add_log_context(broker_id=broker.id)
 
     phone = normalise_wa_id(message.from_phone)
+    if phone == broker.alert_number:
+        # The broker replying to an alert. Treating them as a lead would have the agent try to
+        # sell them their own listings.
+        await db.insert_broker_message(
+            broker_id=broker.id,
+            lead_id=None,
+            direction="inbound",
+            kind=message.type,
+            body=message.text,
+            status="received",
+            wa_message_id=message.wa_message_id,
+        )
+        log.info("message from the broker's alert number stored; not answered")
+        return
     lead = await db.get_or_create_lead(
         broker.id, phone, name=message.profile_name, source="whatsapp"
     )
@@ -240,21 +259,27 @@ async def handle_message(
         result = await agent.reply(broker, lead)
         if result.text is None:
             return
-        wa_message_id = await whatsapp.send_text(
-            phone_number_id=broker.phone_number_id,
-            access_token=decrypt_token(broker.access_token_enc),
-            to=lead.phone,
-            body=result.text,
-            last_inbound_at=lead.last_inbound_at,
-        )
-        await db.insert_message(
-            lead_id=lead.id,
-            direction="outbound",
-            kind="text",
-            body=result.text,
-            wa_message_id=wa_message_id,
-        )
-    log.info("reply sent")
+        try:
+            wa_message_id = await whatsapp.send_text(
+                phone_number_id=broker.phone_number_id,
+                access_token=decrypt_token(broker.access_token_enc),
+                to=lead.phone,
+                body=result.text,
+                last_inbound_at=lead.last_inbound_at,
+            )
+            await db.insert_message(
+                lead_id=lead.id,
+                direction="outbound",
+                kind="text",
+                body=result.text,
+                wa_message_id=wa_message_id,
+            )
+            log.info("reply sent")
+        finally:
+            # After the lead's reply, so it never waits, and even if that reply failed to send:
+            # that is when the broker most needs to know.
+            if result.handoff is not None:
+                await alert_broker(db, whatsapp, broker, result.lead, result.handoff)
 
 
 _locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()

@@ -30,6 +30,7 @@ class FakeDatabase:
         self.followups: list[dict[str, Any]] = []
         self.agent_logs: list[dict[str, Any]] = []
         self.intake_events: list[dict[str, Any]] = []
+        self.broker_messages: list[dict[str, Any]] = []
 
     def add_broker(self, **overrides: Any) -> Broker:
         fields: dict[str, Any] = {
@@ -213,6 +214,36 @@ class FakeDatabase:
             e["lead_id"] == lead_id and e["status"] == "opener_sent" and e["created_at"] >= since
             for e in self.intake_events
         )
+
+    async def insert_broker_message(self, **row: Any) -> bool:
+        wa_message_id = row.get("wa_message_id")
+        if wa_message_id is not None and any(
+            m["wa_message_id"] == wa_message_id for m in self.broker_messages
+        ):
+            return False
+        defaults = {"reason": None, "wa_message_id": None, "detail": None}
+        self.broker_messages.append(defaults | row | {"created_at": datetime.now(UTC)})
+        return True
+
+    async def count_alerts_sent(self, lead_id: str, since: datetime, *, reason: str) -> int:
+        return len(
+            [
+                m
+                for m in self.broker_messages
+                if m["lead_id"] == lead_id
+                and m["direction"] == "outbound"
+                and m["status"] == "sent"
+                and m["reason"] == reason
+                and m["created_at"] >= since
+            ]
+        )
+
+    async def mark_alert_failed(self, wa_message_id: str, detail: str) -> bool:
+        for m in self.broker_messages:
+            if m["wa_message_id"] == wa_message_id and m["direction"] == "outbound":
+                m.update(status="failed", detail=detail)
+                return True
+        return False
 
 
 class FakeLLM:

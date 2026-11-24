@@ -179,3 +179,27 @@ async def test_intake_events_dedupe_and_broker_lookups(db: Database, broker: Bro
     assert await db.opener_sent_since(lead.id, since) is False
     await db.finish_intake_event("meta_ads", external_id, status="opener_sent", lead_id=lead.id)
     assert await db.opener_sent_since(lead.id, since) is True
+
+
+async def test_broker_messages(db: Database, broker: Broker) -> None:
+    lead = await db.get_or_create_lead(broker.id, "919876543210", name=None, source="whatsapp")
+    wa_id = f"wamid.{uuid.uuid4()}"
+    row: dict[str, Any] = {
+        "broker_id": broker.id,
+        "lead_id": lead.id,
+        "direction": "outbound",
+        "kind": "template",
+        "body": "New hot lead",
+        "status": "sent",
+        "reason": "hot_lead",
+        "wa_message_id": wa_id,
+    }
+    assert await db.insert_broker_message(**row) is True
+    assert await db.insert_broker_message(**row) is False
+
+    since = datetime(2000, 1, 1, tzinfo=UTC)
+    assert await db.count_alerts_sent(lead.id, since, reason="hot_lead") == 1
+    assert await db.count_alerts_sent(lead.id, since, reason="question") == 0
+    assert await db.mark_alert_failed(wa_id, "not delivered") is True
+    assert await db.mark_alert_failed("wamid.other", "x") is False
+    assert await db.count_alerts_sent(lead.id, since, reason="hot_lead") == 0

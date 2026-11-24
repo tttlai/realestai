@@ -145,6 +145,14 @@ async def test_unusable_phone_is_recorded_not_sent(
     assert db.intake_events[0]["status"] == status
 
 
+async def test_brokers_own_alert_number_is_not_made_a_lead(
+    db: FakeDatabase, whatsapp: WhatsAppClient, graph: respx.MockRouter
+) -> None:
+    status = await intake_lead(db, whatsapp, db.brokers[0], incoming(phone="+91 98000 00000"))
+    assert status == "skipped_broker_number"
+    assert db.leads == [] and not sent(graph)
+
+
 async def test_opted_out_lead_gets_nothing(
     db: FakeDatabase, whatsapp: WhatsAppClient, graph: respx.MockRouter
 ) -> None:
@@ -176,13 +184,14 @@ async def test_send_failure_is_recorded_and_raised(
         await intake_lead(db, whatsapp, db.brokers[0], incoming())
     assert (db.intake_events[0]["status"], db.intake_events[0]["detail"]) == (
         "failed",
-        "WhatsAppError",
+        "graph api returned 400: code=132001 message='template missing'",
     )
 
 
 async def test_record_skipped_only_once(db: FakeDatabase) -> None:
-    await record_skipped(db, db.brokers[0], "portal_email", "m1", "skipped_not_a_lead")
-    await record_skipped(db, db.brokers[0], "portal_email", "m1", "failed")
+    broker_id = db.brokers[0].id
+    await record_skipped(db, broker_id, "portal_email", "m1", "skipped_not_a_lead")
+    await record_skipped(db, broker_id, "portal_email", "m1", "failed")
     [event] = db.intake_events
     assert event["status"] == "skipped_not_a_lead"
 

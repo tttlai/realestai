@@ -150,9 +150,10 @@ async def test_lead_form_submission_creates_lead_and_sends_opener(
         "- What is your budget?: 80-90 lakh"
     )
 
-    # Meta retries: handled once.
+    # Meta retries: handled once, without reading the lead again.
     await post_signed(client, leadgen_payload(), "/webhooks/meta-leads")
     assert graph["send"].call_count == 1
+    assert graph["lead"].call_count == 1
 
 
 async def test_reply_to_the_opener_reaches_the_agent_with_the_form_answers(
@@ -171,11 +172,18 @@ async def test_reply_to_the_opener_reaches_the_agent_with_the_form_answers(
     ]
 
 
-async def test_unknown_page_is_ignored(
+async def test_unknown_page_is_recorded_not_read(
     client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter
 ) -> None:
     await post_signed(client, leadgen_payload(page_id="999"), "/webhooks/meta-leads")
     assert not graph["lead"].called and db.leads == []
+    [event] = db.intake_events
+    assert (event["broker_id"], event["external_id"], event["status"]) == (
+        None,
+        "lg-1",
+        "skipped_unknown_page",
+    )
+    assert "Page 999 isn't connected" in event["detail"]
 
 
 async def test_broker_without_page_token_uses_the_whatsapp_token(
@@ -188,13 +196,28 @@ async def test_broker_without_page_token_uses_the_whatsapp_token(
     )
 
 
-async def test_graph_error_is_logged_and_nothing_sent(
+async def test_unreadable_lead_is_recorded_with_metas_reason(
     client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter
 ) -> None:
     graph["lead"].respond(400, json={"error": {"code": 100, "message": "no permission"}})
     response = await post_signed(client, leadgen_payload(), "/webhooks/meta-leads")
     assert response.status_code == 200
     assert not graph["send"].called and db.leads == []
+    [event] = db.intake_events
+    assert (event["broker_id"], event["status"], event["detail"]) == (
+        db.brokers[0].id,
+        "failed",
+        "couldn't read the lead: graph api returned 400: code=100 message='no permission'",
+    )
+
+
+async def test_undecryptable_page_token_is_recorded(
+    client: httpx.AsyncClient, db: FakeDatabase, graph: respx.MockRouter
+) -> None:
+    db.brokers[0] = db.brokers[0].model_copy(update={"leads_access_token_enc": "not-fernet"})
+    await post_signed(client, leadgen_payload(), "/webhooks/meta-leads")
+    assert not graph["lead"].called
+    assert "TOKEN_ENCRYPTION_KEY" in db.intake_events[0]["detail"]
 
 
 def test_parse_ignores_other_fields_and_malformed_changes() -> None:

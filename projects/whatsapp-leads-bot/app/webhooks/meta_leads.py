@@ -15,16 +15,18 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from fastapi.responses import PlainTextResponse
 
 from app.config import Settings, get_settings
-from app.crypto import decrypt_token
+from app.crypto import TokenDecryptionError, decrypt_token
 from app.db import Broker, Database
-from app.intake.leads import IncomingLead, intake_lead
+from app.intake.leads import IncomingLead, describe_error, intake_lead, record_skipped
 from app.log import add_log_context, bind_context
 from app.webhooks.signature import verify_signature
-from app.whatsapp.client import WhatsAppClient
+from app.whatsapp.client import WhatsAppClient, WhatsAppError
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks/meta-leads", tags=["meta-leads"])
+
+SOURCE = "meta_ads"
 
 LEAD_FIELDS = "created_time,field_data,form_id,ad_id,ad_name,campaign_name,platform"
 NAME_FIELDS = ("full_name", "name")
@@ -110,15 +112,40 @@ async def process_payload(payload: dict[str, Any], db: Database, whatsapp: Whats
 
 
 async def handle_leadgen(event: LeadgenEvent, db: Database, whatsapp: WhatsAppClient) -> None:
+    """Every submission ends up in intake_events, including ones that fail before a lead exists."""
+    if await db.intake_event_exists(SOURCE, event.leadgen_id):
+        log.info("duplicate lead delivery ignored")
+        return
     broker = await db.get_broker_by_page_id(event.page_id)
     if broker is None:
         log.warning("no active broker for this Facebook Page")
+        await record_skipped(
+            db,
+            None,
+            SOURCE,
+            event.leadgen_id,
+            "skipped_unknown_page",
+            f"Facebook Page {event.page_id} isn't connected to a broker: "
+            "run scripts.connect_facebook_page for it",
+        )
         return
     add_log_context(broker_id=broker.id)
-    token = _leads_token(broker)
-    lead = await whatsapp.get(f"/{event.leadgen_id}", token, {"fields": LEAD_FIELDS})
+    try:
+        token = _leads_token(broker)
+        lead = await whatsapp.get(f"/{event.leadgen_id}", token, {"fields": LEAD_FIELDS})
+    except (WhatsAppError, TokenDecryptionError) as e:
+        await record_skipped(
+            db, broker.id, SOURCE, event.leadgen_id, "failed", f"couldn't read the lead: {_why(e)}"
+        )
+        raise
     form_name = await _form_name(whatsapp, token, lead.get("form_id") or event.form_id)
     await intake_lead(db, whatsapp, broker, to_incoming(event.leadgen_id, lead, form_name))
+
+
+def _why(error: Exception) -> str:
+    if isinstance(error, TokenDecryptionError):
+        return "the saved Page token can't be decrypted (was TOKEN_ENCRYPTION_KEY changed?)"
+    return describe_error(error)
 
 
 def to_incoming(leadgen_id: str, lead: dict[str, Any], form_name: str | None) -> IncomingLead:
@@ -143,7 +170,7 @@ def to_incoming(leadgen_id: str, lead: dict[str, Any], form_name: str | None) ->
 
     detail = " / ".join(x for x in (form_name, lead.get("ad_name")) if x) or None
     return IncomingLead(
-        source="meta_ads",
+        source=SOURCE,
         external_id=leadgen_id,
         kind="lead_form",
         phone=phone,

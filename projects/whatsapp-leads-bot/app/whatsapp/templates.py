@@ -45,3 +45,27 @@ def lead_opener_params(name: str | None, enquiry: str | None, agency: str) -> li
         template_param(enquiry, "your property search"),
         template_param(agency, agency or "us"),
     ]
+
+
+# To the broker's alert number when a lead is hot.
+# {{1}} lead's name, {{2}} lead's number, {{3}} one-line summary.
+HOT_LEAD_ALERT = Template(
+    name="hot_lead_alert",
+    language="en",
+    body="New hot lead for you: {{1}}, {{2}}. {{3}} Please call or WhatsApp them soon.",
+)
+
+# To the broker's alert number when a lead needs a person for any other reason (a question the
+# listings don't answer, a complaint, asked for a person, or the assistant failed).
+LEAD_NEEDS_REPLY = Template(
+    name="lead_needs_reply",
+    language="en",
+    body="A lead needs a reply from you: {{1}}, {{2}}. {{3}} Please call or WhatsApp them soon.",
+)
+
+
+def broker_alert_params(name: str | None, phone: str, summary: str) -> list[str]:
+    sentence = template_param(summary, "No details were noted.", 600)
+    if sentence[-1] not in ".!?…।":
+        sentence += "."
+    return [template_param(name, "Name not given"), f"+{phone}", sentence]
