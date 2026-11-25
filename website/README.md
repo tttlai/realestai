@@ -6,7 +6,7 @@ static legal pages.
 | Path | What it is |
 |---|---|
 | `src/` | The React homepage |
-| `public/` | Copied as-is into the build: `CNAME`, `app-icon.png`, `privacy/`, `data-deletion/`, `legal.css` |
+| `public/` | Copied as-is into the build: `CNAME`, `app-icon.png`, `brokers/` (the page for property brokers), `privacy/`, `data-deletion/`, `legal.css` |
 | `dist/` | Local build output (not committed) |
 
 ## Publishing
