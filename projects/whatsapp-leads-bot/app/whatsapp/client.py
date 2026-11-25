@@ -124,4 +124,7 @@ def _error_detail(response: httpx.Response) -> str:
         error = response.json().get("error", {})
     except ValueError:
         return "non-JSON error body"
-    return f"code={error.get('code')} message={error.get('message')!r}"
+    text = f"code={error.get('code')} message={error.get('message')!r}"
+    # The message is often only a title ("Invalid parameter"); this says which and why.
+    details = (error.get("error_data") or {}).get("details")
+    return f"{text} details={details!r}" if details else text
