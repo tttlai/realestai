@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .env
+
+# Lead finder output: scraped business contacts, never committed
+leads_scrapper/leads_*/
