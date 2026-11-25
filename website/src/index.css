@@ -2,11 +2,103 @@
 @tailwind components;
 @tailwind utilities;
 
-.hide-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 72px;
+  }
+
+  body {
+    @apply bg-day font-sans text-lg text-ink;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display font-bold;
+    font-stretch: 94%;
+    line-height: 1.06;
+    text-wrap: balance;
+  }
+
+  :focus-visible {
+    outline: 3px solid #f3bd62;
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
 }
 
-.hide-scrollbar::-webkit-scrollbar {
-  display: none;
+@layer components {
+  .wrap {
+    width: min(1180px, 100% - 40px);
+    margin-inline: auto;
+  }
+
+  .section {
+    padding-block: clamp(72px, 10vw, 136px);
+  }
+
+  .section-title {
+    font-size: clamp(2.1rem, 1.4rem + 2.8vw, 3.5rem);
+  }
+
+  .button {
+    @apply inline-flex items-center gap-3 rounded-lg px-7 py-4 font-bold;
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .button:hover {
+    transform: translateY(-2px);
+  }
+
+  .button svg,
+  .arrow {
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .button:hover svg,
+  a:hover > .arrow,
+  a:hover .arrow {
+    transform: translateX(4px);
+  }
+
+  /* The lamp: off for a moment, one flicker, then on. */
+  .lamp-on {
+    animation: switch-on 1.4s 0.35s linear backwards;
+  }
+
+  .rise {
+    animation: rise 0.9s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  }
+}
+
+@keyframes switch-on {
+  0% { opacity: 0; }
+  8% { opacity: 0.7; }
+  14% { opacity: 0.15; }
+  30% { opacity: 0.15; }
+  36% { opacity: 0.9; }
+  42% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+@keyframes rise {
+  from { transform: translateY(18px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .lamp-on,
+  .rise {
+    animation: none;
+  }
+
+  .button,
+  .button svg,
+  .arrow {
+    transition: none;
+  }
 }
