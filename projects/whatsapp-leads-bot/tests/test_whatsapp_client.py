@@ -80,6 +80,23 @@ async def test_no_retry_on_4xx() -> None:
 
 
 @respx.mock
+async def test_error_includes_metas_details() -> None:
+    respx.post(URL).respond(
+        400,
+        json={
+            "error": {
+                "code": 100,
+                "message": "(#100) Invalid parameter",
+                "error_data": {"details": "Parameter name is missing or empty"},
+            }
+        },
+    )
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(WhatsAppError, match="details='Parameter name is missing or empty'"):
+            await send(WhatsAppClient(http, "v24.0"))
+
+
+@respx.mock
 async def test_send_template_needs_no_window() -> None:
     route = respx.post(URL).respond(200, json={"messages": [{"id": "wamid.T"}]})
     async with httpx.AsyncClient() as http:
