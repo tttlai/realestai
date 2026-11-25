@@ -14,7 +14,7 @@ function App() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  const navLinks = ['About', 'Services', 'Case Studies', 'Contact'];
+  const navLinks = ['About', 'Services', 'Contact'];
 
   const Logo = () => (
     <div className="flex items-center space-x-2">
@@ -241,6 +241,22 @@ function App() {
             ))}
           </div>
 
+          {/* Links to the static page in public/brokers/ */}
+          <a
+            href="/brokers/"
+            className="group mt-8 p-8 rounded-xl bg-white shadow-lg hover:shadow-xl transition-all duration-300 border border-gray-100 flex flex-col md:flex-row md:items-center gap-6"
+          >
+            <Home className="w-12 h-12 text-[#64FFDA] flex-shrink-0" />
+            <div className="flex-grow">
+              <h3 className="text-2xl font-bold mb-2 text-gray-900">WhatsApp Assistant for Property Brokers</h3>
+              <p className="text-gray-600">Answers property enquiries day or night, finds out what buyers need, and alerts you when someone wants a visit</p>
+            </div>
+            <span className="text-[#2A9D8F] font-semibold inline-flex items-center flex-shrink-0">
+              See how it works
+              <ChevronRight className="ml-1 group-hover:translate-x-1 transition-transform" />
+            </span>
+          </a>
+
           {/* Featured Services with Horizontal Scroll */}
           <div className="mt-16">
             <h3 className="text-2xl font-bold text-center mb-8 text-gray-900">
@@ -278,43 +294,6 @@ function App() {
                 </div>
               </div>
             </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Testimonials Section */}
-      <section id="case-studies" className="py-20 bg-[#64FFDA]/5 border-b border-gray-200">
-        <div className="container mx-auto px-6">
-          <h2 className="text-4xl font-bold text-center mb-16 text-gray-900">
-            Client Success Stories
-          </h2>
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {[
-              {
-                quote: "The AI solutions provided transformed our customer service operations completely.",
-                author: "Sarah Johnson",
-                role: "CTO, TechCorp"
-              },
-              {
-                quote: "We've seen a 300% increase in efficiency since implementing their automation systems.",
-                author: "Michael Chen",
-                role: "Operations Director, InnovateCo"
-              },
-              {
-                quote: "Their team's expertise in AI integration is unmatched in the industry.",
-                author: "Emily Rodriguez",
-                role: "CEO, FutureScale"
-              }
-            ].map((testimonial, index) => (
-              <div key={index} className="bg-white p-8 rounded-lg shadow-lg border border-gray-100">
-                <MessageSquare className="w-10 h-10 text-[#64FFDA] mb-4" />
-                <p className="text-gray-700 mb-6">{testimonial.quote}</p>
-                <div>
-                  <p className="font-bold text-gray-900">{testimonial.author}</p>
-                  <p className="text-gray-600">{testimonial.role}</p>
-                </div>
-              </div>
-            ))}
           </div>
         </div>
       </section>
@@ -361,7 +340,7 @@ function App() {
             <div>
               <h4 className="font-semibold mb-4 text-gray-900">Quick Links</h4>
               <ul className="space-y-2">
-                {['Home', 'About', 'Services', 'Case Studies', 'Contact'].map((link) => (
+                {['Home', 'About', 'Services', 'Contact'].map((link) => (
                   <li key={link}>
                     <a href="#" className="text-gray-500 hover:text-[#64FFDA] transition-colors">
                       {link}
