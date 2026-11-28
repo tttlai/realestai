@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, ChevronRight, Menu, X, Lightbulb } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, ChevronRight, Menu, X, Lightbulb } from 'lucide-react';
 import Lamp from './Lamp';
 
 const consultationLink = 'https://cal.com/trishal-suvarna-zo4ibc/30min';
@@ -27,6 +27,26 @@ const services = [
   {
     title: 'Automate Documentation',
     description: 'AI-powered systems that generate, update, and maintain technical documentation automatically',
+  },
+];
+
+// Our own products, shown as panels under the services list.
+const products = [
+  {
+    title: 'WhatsApp Assistant for Property Brokers',
+    description:
+      'Answers property enquiries day or night, finds out what buyers need, and alerts you when someone wants a visit',
+    href: '/brokers/', // the static page in public/brokers/
+    cta: 'See how it works',
+    external: false,
+  },
+  {
+    title: 'RealAssist for Landlords',
+    description:
+      'Property management for Indian landlords and NRIs: AI rent estimates, rent collection, WhatsApp reminders and tax reports',
+    href: 'https://www.realassist.in/',
+    cta: 'Visit realassist.in',
+    external: true,
   },
 ];
 
@@ -187,22 +207,30 @@ function App() {
             ))}
           </ul>
 
-          {/* Links to the static page in public/brokers/ */}
-          <a
-            href="/brokers/"
-            className="mt-10 grid gap-6 rounded-2xl bg-mint-soft p-7 hover:bg-mint md:grid-cols-[1fr_auto] md:items-center md:p-11"
-          >
-            <div>
-              <h3 className="text-[clamp(1.7rem,1.3rem+1.6vw,2.5rem)]">WhatsApp Assistant for Property Brokers</h3>
-              <p className="mt-3 max-w-[52ch]">
-                Answers property enquiries day or night, finds out what buyers need, and alerts you when someone wants a visit
-              </p>
-            </div>
-            <span className="inline-flex items-center gap-1 font-bold">
-              See how it works
-              <ChevronRight className="arrow" aria-hidden="true" />
-            </span>
-          </a>
+          <ul className="mt-10 grid gap-5 lg:grid-cols-2">
+            {products.map(({ title, description, href, cta, external }) => (
+              <li key={title}>
+                <a
+                  href={href}
+                  {...(external ? newTab : {})}
+                  className="flex h-full flex-col gap-6 rounded-2xl bg-mint-soft p-7 hover:bg-mint md:p-11"
+                >
+                  <div>
+                    <h3 className="text-[clamp(1.7rem,1.3rem+1.6vw,2.5rem)]">{title}</h3>
+                    <p className="mt-3 max-w-[52ch]">{description}</p>
+                  </div>
+                  <span className="mt-auto inline-flex items-center gap-1 font-bold">
+                    {cta}
+                    {external ? (
+                      <ArrowUpRight className="arrow" aria-hidden="true" />
+                    ) : (
+                      <ChevronRight className="arrow" aria-hidden="true" />
+                    )}
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
         </section>
 
         <section className="section bg-night text-night-text">
@@ -269,7 +297,7 @@ function App() {
               <h2 className="text-lg text-snow">Connect With Us</h2>
               <ul className="mt-2">
                 <li>
-                  <a href="mailto:tttlaiagency@gmail.com" className="inline-block py-2 hover:text-mint">
+                  <a href="mailto:realassisthq@gmail.com" className="inline-block py-2 hover:text-mint">
                     Email
                   </a>
                 </li>
