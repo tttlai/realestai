@@ -269,7 +269,7 @@ function App() {
               <h2 className="text-lg text-snow">Connect With Us</h2>
               <ul className="mt-2">
                 <li>
-                  <a href="mailto:tttlaiagency@gmail.com" className="inline-block py-2 hover:text-mint">
+                  <a href="mailto:realassisthq@gmail.com" className="inline-block py-2 hover:text-mint">
                     Email
                   </a>
                 </li>
