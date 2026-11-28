@@ -6,31 +6,13 @@ const consultationLink = 'https://cal.com/trishal-suvarna-zo4ibc/30min';
 const newTab = { target: '_blank', rel: 'noopener noreferrer' };
 
 const navLinks = [
-  { label: 'About', href: '#about' },
+  { label: 'Products', href: '#products' },
   { label: 'Services', href: '#services' },
+  { label: 'About', href: '#about' },
   { label: 'Contact', href: '#contact' },
 ];
 
-const services = [
-  {
-    title: 'AI Customer Service',
-    description: 'Intelligent agents that handle customer inquiries 24/7 with human-like understanding',
-  },
-  {
-    title: 'Workflow Automation',
-    description: 'Smart agents that streamline and automate your business processes end-to-end',
-  },
-  {
-    title: 'Custom AI Agents',
-    description: 'Tailored AI agents designed for your specific business needs and objectives',
-  },
-  {
-    title: 'Automate Documentation',
-    description: 'AI-powered systems that generate, update, and maintain technical documentation automatically',
-  },
-];
-
-// Our own products, shown as panels above the services list.
+// Ready-to-use products, right under the hero.
 const products = [
   {
     title: 'WhatsApp Assistant for Property Brokers',
@@ -50,42 +32,27 @@ const products = [
   },
 ];
 
-const featuredServices = [
+// Custom work, each with one example.
+const services = [
   {
-    title: 'Real Estate & Airbnb Automation',
-    description: 'End-to-end automation for property management and bookings',
-    features: [
-      {
-        title: 'Automated Guest Communication',
-        description: 'WhatsApp integration for instant responses, automated PDF sharing, and seamless guest interaction',
-      },
-      {
-        title: 'Smart Booking Management',
-        description: 'Synchronized calendars across platforms, automated payment verification, and booking confirmation',
-      },
-      {
-        title: 'Streamlined Check-in',
-        description: 'Automated security code generation, smart lock integration, and welcome message distribution',
-      },
-    ],
+    title: 'AI Customer Service',
+    description: 'Intelligent agents that handle customer inquiries 24/7 with human-like understanding',
+    example: 'Instant WhatsApp replies to guests, with PDFs shared automatically',
   },
   {
-    title: 'AI-Powered Appointment Scheduler',
-    description: 'Smart scheduling solution for service-based businesses',
-    features: [
-      {
-        title: 'Intelligent Client Management',
-        description: 'AI-driven scheduling that learns from client preferences and automatically suggests optimal time slots',
-      },
-      {
-        title: 'Smart Notifications',
-        description: 'Automated reminders, rescheduling assistance, and follow-up communications',
-      },
-      {
-        title: 'Resource Optimization',
-        description: 'Dynamic scheduling that maximizes staff utilization and minimizes downtime',
-      },
-    ],
+    title: 'Workflow Automation',
+    description: 'Smart agents that streamline and automate your business processes end-to-end',
+    example: 'Booking calendars synced across platforms, payments verified, and check-in codes sent to smart locks',
+  },
+  {
+    title: 'Appointment Scheduling',
+    description: 'Smart scheduling for service-based businesses',
+    example: 'Suggests the best time slots, sends reminders and handles rescheduling',
+  },
+  {
+    title: 'Custom AI Agents & Documentation',
+    description: 'Tailored AI agents designed for your specific business needs and objectives',
+    example: 'Technical documentation that is generated, updated and maintained automatically',
   },
 ];
 
@@ -178,30 +145,16 @@ function App() {
           </div>
         </section>
 
-        <section id="about" className="section">
-          <div className="wrap grid gap-8 md:grid-cols-[1.15fr_1fr] md:gap-20">
-            <h2 className="section-title">Pioneering the Future of Business Automation</h2>
-            <div>
-              <p className="max-w-[48ch] text-xl leading-relaxed text-ink-soft">
-                We're not just another automation company. We're pioneers in combining artificial intelligence with business processes to create seamless, efficient, and intelligent workflows that transform how businesses operate.
-              </p>
-              <a href="#services" className="mt-5 inline-flex items-center gap-1 py-2 font-bold text-teal">
-                Explore Our Services
-                <ChevronRight className="arrow" aria-hidden="true" />
-              </a>
-            </div>
-          </div>
-        </section>
-
-        <section id="services" className="wrap scroll-mt-8 pb-[clamp(72px,10vw,136px)]">
-          <h2 className="section-title">Our Services</h2>
-          <ul className="mt-10 grid gap-5 lg:grid-cols-2">
+        <section id="products" className="section wrap">
+          <h2 className="section-title">Our Products</h2>
+          <p className="mt-3 text-xl text-ink-soft">Ready to use today.</p>
+          <ul className="mt-8 grid gap-4 md:mt-10 md:gap-5 lg:grid-cols-2">
             {products.map(({ title, description, href, cta, external }) => (
               <li key={title}>
                 <a
                   href={href}
                   {...(external ? newTab : {})}
-                  className="flex h-full flex-col gap-6 rounded-2xl bg-mint-soft p-7 hover:bg-mint md:p-11"
+                  className="flex h-full flex-col gap-4 rounded-2xl bg-mint-soft p-6 hover:bg-mint md:gap-6 md:p-11"
                 >
                   <div>
                     <h3 className="text-[clamp(1.7rem,1.3rem+1.6vw,2.5rem)]">{title}</h3>
@@ -220,41 +173,33 @@ function App() {
             ))}
           </ul>
 
-          <ul className="mt-12 border-b border-day-line">
-            {services.map(({ title, description }) => (
-              <li
-                key={title}
-                className="grid gap-2 border-t border-day-line py-7 md:grid-cols-[1.15fr_1fr] md:items-baseline md:gap-20"
-              >
-                <h3 className="text-[clamp(1.5rem,1.2rem+1.2vw,2.1rem)]">{title}</h3>
-                <p className="max-w-[48ch] text-ink-soft">{description}</p>
-              </li>
-            ))}
-          </ul>
         </section>
 
-        <section className="section bg-night text-night-text">
+        <section id="services" className="section bg-night text-night-text">
           <div className="wrap">
-            <h2 className="section-title text-snow">Featured Solutions</h2>
-            {featuredServices.map(({ title, description, features }) => (
-              <div
-                key={title}
-                className="mt-14 grid gap-8 border-t border-[#2c4468] pt-10 md:grid-cols-[1fr_1.4fr] md:gap-20"
-              >
-                <div>
-                  <h3 className="text-[clamp(1.7rem,1.3rem+1.4vw,2.4rem)] text-snow">{title}</h3>
-                  <p className="mt-4 max-w-[36ch]">{description}</p>
-                </div>
-                <dl className="grid gap-7">
-                  {features.map((feature) => (
-                    <div key={feature.title}>
-                      <dt className="text-xl font-bold text-mint">{feature.title}</dt>
-                      <dd className="mt-1 max-w-[56ch]">{feature.description}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </div>
-            ))}
+            <h2 className="section-title text-snow">What We Build</h2>
+            <p className="mt-3 text-xl">Custom AI and automation, built around your business.</p>
+            <ul className="mt-8 grid gap-4 md:mt-10 md:grid-cols-2 md:gap-5">
+              {services.map(({ title, description, example }) => (
+                <li key={title} className="rounded-2xl bg-night-raised p-6 md:p-9">
+                  <h3 className="text-[clamp(1.4rem,1.2rem+1vw,2rem)] text-snow">{title}</h3>
+                  <p className="mt-2 text-base leading-normal md:mt-3 md:text-lg">{description}</p>
+                  <p className="mt-4 border-t border-[#2c4468] pt-3 text-base leading-normal md:mt-5 md:pt-4 md:text-lg">
+                    <span className="font-bold text-mint">For example: </span>
+                    {example}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
+        <section id="about" className="section">
+          <div className="wrap grid gap-8 md:grid-cols-[1.15fr_1fr] md:gap-20">
+            <h2 className="section-title">Pioneering the Future of Business Automation</h2>
+            <p className="max-w-[48ch] text-xl leading-relaxed text-ink-soft">
+              We're not just another automation company. We're pioneers in combining artificial intelligence with business processes to create seamless, efficient, and intelligent workflows that transform how businesses operate.
+            </p>
           </div>
         </section>
 
