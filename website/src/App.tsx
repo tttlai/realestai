@@ -30,7 +30,7 @@ const services = [
   },
 ];
 
-// Our own products, shown as panels under the services list.
+// Our own products, shown as panels above the services list.
 const products = [
   {
     title: 'WhatsApp Assistant for Property Brokers',
@@ -195,18 +195,6 @@ function App() {
 
         <section id="services" className="wrap scroll-mt-8 pb-[clamp(72px,10vw,136px)]">
           <h2 className="section-title">Our Services</h2>
-          <ul className="mt-10 border-b border-day-line">
-            {services.map(({ title, description }) => (
-              <li
-                key={title}
-                className="grid gap-2 border-t border-day-line py-7 md:grid-cols-[1.15fr_1fr] md:items-baseline md:gap-20"
-              >
-                <h3 className="text-[clamp(1.5rem,1.2rem+1.2vw,2.1rem)]">{title}</h3>
-                <p className="max-w-[48ch] text-ink-soft">{description}</p>
-              </li>
-            ))}
-          </ul>
-
           <ul className="mt-10 grid gap-5 lg:grid-cols-2">
             {products.map(({ title, description, href, cta, external }) => (
               <li key={title}>
@@ -228,6 +216,18 @@ function App() {
                     )}
                   </span>
                 </a>
+              </li>
+            ))}
+          </ul>
+
+          <ul className="mt-12 border-b border-day-line">
+            {services.map(({ title, description }) => (
+              <li
+                key={title}
+                className="grid gap-2 border-t border-day-line py-7 md:grid-cols-[1.15fr_1fr] md:items-baseline md:gap-20"
+              >
+                <h3 className="text-[clamp(1.5rem,1.2rem+1.2vw,2.1rem)]">{title}</h3>
+                <p className="max-w-[48ch] text-ink-soft">{description}</p>
               </li>
             ))}
           </ul>
